@@ -1,0 +1,19 @@
+# Данные (официальная библиотека Т-Банк)
+# Модуль: t_tech.invest
+# Установка: pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
+t-tech-investments>=0.3.3
+
+# Обработка данных
+pandas>=2.1.0
+numpy>=1.25.0
+
+# Графики (устанавливаем позже)
+lightweight-charts>=1.0.1
+plotly>=5.18.0
+
+# Технический анализ (устанавливаем позже)
+pandas-ta>=0.3.14b
+
+# Утилиты
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
