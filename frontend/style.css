@@ -1,0 +1,94 @@
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#131722;--bg2:#1e222d;--bg3:#2a2e39;
+  --border:#363a45;--text:#d1d4dc;--muted:#787b86;
+  --accent:#2196F3;--green:#4CAF50;--red:#f44336;
+  --r:6px;
+}
+
+body{background:var(--bg);color:var(--text);font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── Шапка ── */
+.header{display:flex;align-items:center;gap:16px;padding:6px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
+.logo{font-size:15px;font-weight:700;color:var(--accent);white-space:nowrap}
+.toolbar{display:flex;gap:6px;align-items:center;flex:1}
+.price-ticker{display:flex;gap:8px;align-items:center;margin-left:auto;font-size:13px}
+#rt-ticker{font-weight:700;color:var(--muted)}
+#rt-price{font-weight:700;font-size:15px}
+.change-up{color:var(--green)}.change-down{color:var(--red)}.change-neutral{color:var(--muted)}
+
+/* ── Layout ── */
+.main{display:flex;flex:1;min-height:0;overflow:hidden}
+.chart-area{flex:1;display:flex;flex-direction:column;min-width:0;height:100%}
+
+/* ИСПРАВЛЕНИЕ: явные высоты через vh */
+#chart-main{
+    width:100%;
+    height:65vh;
+}
+#chart-sub{
+    width:100%;
+    height:20vh;
+    border-top:1px solid var(--border);
+}
+
+
+/* ── Сайдбар ── */
+.sidebar{width:275px;background:var(--bg2);border-left:1px solid var(--border);overflow-y:auto;padding:10px;flex-shrink:0}
+
+/* ── Панель ── */
+.panel{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r)}
+.panel-header{padding:7px 10px;font-weight:600;border-bottom:1px solid var(--border);font-size:12px}
+.panel-body{padding:10px}
+.mt{margin-top:10px}
+
+/* ── Форма ── */
+.label{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.input,.select{width:100%;padding:5px 8px;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:var(--r);font-size:13px}
+.input:focus,.select:focus{outline:none;border-color:var(--accent)}
+.code-editor{width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:#a8ff78;border-radius:var(--r);font:13px/1.5 'Consolas','JetBrains Mono',monospace;resize:vertical;min-height:90px}
+.code-editor:focus{outline:none;border-color:var(--accent)}
+.hint{margin-top:8px;padding:7px;background:var(--bg);border-radius:var(--r);color:var(--muted);font-size:10px;line-height:1.7}
+.row{display:flex;align-items:center;gap:8px}
+.row .label{margin:0;white-space:nowrap}
+.full{width:100%}
+
+/* ── Кнопки ── */
+.btn{padding:5px 10px;border:none;border-radius:var(--r);cursor:pointer;font-size:12px;font-weight:500;transition:opacity .15s}
+.btn:hover{opacity:.85}.btn:active{opacity:.7}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-success{background:var(--green);color:#fff}
+.btn-tpl{background:var(--bg2);color:var(--text);border:1px solid var(--border);margin:2px 2px 0 0;font-size:11px;padding:3px 7px}
+.btn-sm{background:transparent;color:var(--muted);border:1px solid var(--border);padding:2px 6px;font-size:10px}
+.templates{display:flex;flex-wrap:wrap}
+
+/* ── Сообщения ── */
+.msg{margin-top:8px;padding:7px;border-radius:var(--r);font-size:11px;line-height:1.5}
+.error{background:rgba(244,67,54,.1);border:1px solid var(--red);color:var(--red)}
+.success{background:rgba(76,175,80,.1);border:1px solid var(--green);color:var(--green)}
+.muted{color:var(--muted);font-size:11px}
+
+/* ── Список индикаторов ── */
+.ind-item{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px}
+.ind-item:last-child{border-bottom:none}
+.ind-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px;flex-shrink:0}
+.ind-remove{color:var(--red);cursor:pointer;padding:1px 5px}
+
+/* ── Статус ── */
+.statusbar{padding:3px 14px;background:var(--bg2);border-top:1px solid var(--border);color:var(--muted);font-size:10px;flex-shrink:0}
+
+/* ── Real-time dot ── */
+.rt-dot { color: var(--muted); font-size: 10px; margin-right: 4px; transition: color 0.3s; }
+.rt-dot.live { color: var(--green); animation: blink 1.5s ease-in-out infinite; }
+@keyframes blink { 0%,100%{ opacity:1 } 50%{ opacity:0.2 } }
+
+/* ── Кнопка Сейчас ── */
+.btn-now {
+    background: var(--bg3);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 5px 10px;
+}
+.btn-now:hover { background: var(--accent); color: #fff; }
+

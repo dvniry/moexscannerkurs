@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOEX Scanner</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/lw-charts.js"></script>
+</head>
+<body>
+
+<!-- ── Шапка ───────────────────────────────────────────── -->
+<header class="header">
+    <span class="logo">📈 MOEX Scanner</span>
+
+    <div class="toolbar">
+    <input  id="ticker"   class="input" value="SBER" placeholder="Тикер" style="width:80px"/>
+    <select id="interval" class="select">
+        <option value="1m">1 мин</option>
+        <option value="5m">5 мин</option>
+        <option value="15m">15 мин</option>
+        <option value="1h" selected>1 час</option>
+        <option value="1d">1 день</option>
+    </select>
+    <button class="btn btn-primary" onclick="loadChart()">▶ Загрузить</button>
+    <button class="btn btn-now" onclick="scrollToNow()" title="К текущей свече">⏩ Сейчас</button>
+    </div>
+
+
+
+    <!-- Real-time цена -->
+    <div class="price-ticker">
+        <span id="rt-dot" class="rt-dot">●</span>
+        <span id="rt-ticker">SBER</span>
+        <span id="rt-price">—</span>
+        <span id="rt-change" class="change-neutral">—</span>
+    </div>
+
+</header>
+
+<!-- ── Layout ──────────────────────────────────────────── -->
+<main class="main">
+
+    <!-- Графики -->
+    <div class="chart-area">
+        <div id="chart-main"></div>
+        <div id="chart-sub"></div>
+    </div>
+
+    <!-- Сайдбар -->
+    <aside class="sidebar">
+
+        <!-- Редактор формул -->
+        <div class="panel">
+            <div class="panel-header">📐 Редактор формул</div>
+            <div class="panel-body">
+                <label class="label">Название</label>
+                <input id="f-name" class="input" value="My Indicator"/>
+
+                <label class="label mt">Формула</label>
+                <textarea id="f-code" class="code-editor" rows="6">RESULT = EMA(9) - EMA(21)</textarea>
+
+                <div class="hint">
+                    <b>Переменные:</b> CLOSE OPEN HIGH LOW VOLUME<br>
+                    <b>MA:</b> EMA(n) · SMA(n)<br>
+                    <b>Осц:</b> RSI(n) · MACD(f,s,g) · ATR(n)<br>
+                    <b>BB:</b> BB_UPPER(n,s) · BB_LOWER(n,s)<br>
+                    <b>Утил:</b> MAX(x,n) · MIN(x,n) · STD(x,n)<br>
+                    <b>Сигнал:</b> CROSS_UP(a,b) · CROSS_DOWN(a,b)<br>
+                    <b>Условие:</b> IF(условие, да, нет)
+                </div>
+
+                <div class="row mt">
+                    <label class="label">Панель</label>
+                    <select id="f-pane" class="select">
+                        <option value="sub" selected>Субграфик</option>
+                        <option value="main">Основной</option>
+                    </select>
+                </div>
+
+                <button class="btn btn-success full mt" onclick="applyFormula()">
+                    ▶ Применить
+                </button>
+
+                <div id="f-error"  class="msg error"  style="display:none"></div>
+                <div id="f-result" class="msg success" style="display:none"></div>
+            </div>
+        </div>
+
+        <!-- Шаблоны -->
+        <div class="panel mt">
+            <div class="panel-header">⚡ Шаблоны</div>
+            <div class="panel-body templates">
+                <button class="btn btn-tpl" onclick="tpl('ema_diff')">EMA Diff</button>
+                <button class="btn btn-tpl" onclick="tpl('rsi')">RSI Зоны</button>
+                <button class="btn btn-tpl" onclick="tpl('typical')">Typical</button>
+                <button class="btn btn-tpl" onclick="tpl('volatility')">Волатильность</button>
+                <button class="btn btn-tpl" onclick="tpl('vol_pressure')">Объём</button>
+                <button class="btn btn-tpl" onclick="tpl('cross')">EMA Cross</button>
+                <button class="btn btn-tpl" onclick="tpl('bb')">Bollinger</button>
+            </div>
+        </div>
+
+        <!-- Список индикаторов -->
+        <div class="panel mt">
+            <div class="panel-header">
+                📊 Индикаторы
+                <button class="btn btn-sm" onclick="clearIndicators()" style="float:right">✕ Все</button>
+            </div>
+            <div id="ind-list" class="panel-body">
+                <span class="muted">Пока нет</span>
+            </div>
+        </div>
+
+    </aside>
+</main>
+
+<!-- Статус-бар -->
+<div id="status" class="statusbar">Готов</div>
+
+<script src="/static/chart.js"></script>
+<script src="/static/editor.js"></script>
+</body>
+</html>

@@ -123,3 +123,47 @@ class ChartEngine:
         """Очистить все индикаторы."""
         self._indicators.clear()
         print("✅ Индикаторы очищены")
+    
+    def add_subchart_line(
+        self,
+        name: str,
+        data: pd.Series,
+        color: str = '#2196F3',
+        width: int = 2,
+        height: float = 0.25
+    ):
+        """Индикатор в отдельном окне под графиком (RSI, MACD, кастомные)."""
+        if self._current_data is None:
+            raise ValueError("Сначала вызовите plot_candles()")
+        
+        s = data.copy()
+        idx = pd.to_datetime(s.index)
+        if getattr(idx, 'tz', None) is not None:
+            idx = idx.tz_convert('UTC').tz_localize(None)
+        s.index = idx.astype('datetime64[ns]')
+        s = s.reindex(self._current_data.index)
+        
+        line_data = pd.DataFrame(
+            {name: s.values},
+            index=self._current_data.index
+        ).dropna()
+        
+        if line_data.empty:
+            print(f"⚠️  {name!r}: нет данных")
+            return
+        
+        # Создаём субграфик
+        subchart = self.chart.create_subchart(
+            position='bottom',
+            height=height,
+            sync=True
+        )
+        subchart.legend(visible=True)
+        
+        line = subchart.create_line(name, color=color, width=width)
+        line.set(line_data)
+        
+        self._indicators[f'sub_{name}'] = subchart
+        print(f"✅ Субграфик: {name} ({len(line_data)} точек) [{color}]")
+
+
