@@ -3,7 +3,7 @@ import os
 import sys
 import asyncio
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd

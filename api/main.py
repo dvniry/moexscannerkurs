@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from api.routes.candles import get_candles
 from api.routes.formula import calculate_formula
 from api.routes.ws      import price_ws
+from api.routes.scanner import run_scanner, get_tickers
 
 FRONTEND_DIR = str(Path(__file__).parent.parent / "frontend")
 
@@ -32,7 +33,12 @@ async def health() -> dict:
 # ── Роутер с префиксом /api ───────────────────────────────
 api_router = Router(
     path="/api",
-    route_handlers=[get_candles, calculate_formula],
+    route_handlers=[
+        get_candles,
+        calculate_formula,
+        run_scanner,      # ← новый
+        get_tickers,      # ← новый
+    ],
 )
 
 # ── Приложение ────────────────────────────────────────────

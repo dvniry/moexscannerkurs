@@ -211,5 +211,21 @@ function setStatus(msg) {
     document.getElementById('status').textContent = msg;
 }
 
+// ── Переключение вкладок ──────────────────────────────────
+function switchTab(name) {
+    document.getElementById('page-chart').style.display   = name === 'chart'   ? 'flex' : 'none';
+    document.getElementById('page-scanner').style.display = name === 'scanner' ? 'flex' : 'none';
+    document.getElementById('tab-chart').classList.toggle('active',   name === 'chart');
+    document.getElementById('tab-scanner').classList.toggle('active', name === 'scanner');
+
+    // Перерисовываем графики при возврате на вкладку
+    if (name === 'chart') {
+        setTimeout(() => {
+            mainChart.applyOptions({ width: mainEl.clientWidth, height: mainEl.clientHeight });
+            subChart.applyOptions({  width: subEl.clientWidth,  height: subEl.clientHeight  });
+        }, 50);
+    }
+}
+
 // ── Запуск ────────────────────────────────────────────────
 loadChart();

@@ -13,20 +13,25 @@
 <header class="header">
     <span class="logo">📈 MOEX Scanner</span>
 
-    <div class="toolbar">
-    <input  id="ticker"   class="input" value="SBER" placeholder="Тикер" style="width:80px"/>
-    <select id="interval" class="select">
-        <option value="1m">1 мин</option>
-        <option value="5m">5 мин</option>
-        <option value="15m">15 мин</option>
-        <option value="1h" selected>1 час</option>
-        <option value="1d">1 день</option>
-    </select>
-    <button class="btn btn-primary" onclick="loadChart()">▶ Загрузить</button>
-    <button class="btn btn-now" onclick="scrollToNow()" title="К текущей свече">⏩ Сейчас</button>
+    <!-- Вкладки -->
+    <nav class="tabs">
+        <button class="tab active" id="tab-chart"   onclick="switchTab('chart')">График</button>
+        <button class="tab"        id="tab-scanner" onclick="switchTab('scanner')">Сканер</button>
+    </nav>
+
+    <!-- Toolbar графика -->
+    <div class="toolbar" id="toolbar-chart">
+        <input  id="ticker"   class="input" value="SBER" placeholder="Тикер" style="width:80px"/>
+        <select id="interval" class="select">
+            <option value="1m">1 мин</option>
+            <option value="5m">5 мин</option>
+            <option value="15m">15 мин</option>
+            <option value="1h" selected>1 час</option>
+            <option value="1d">1 день</option>
+        </select>
+        <button class="btn btn-primary" onclick="loadChart()">▶ Загрузить</button>
+        <button class="btn btn-now"     onclick="scrollToNow()">⏩ Сейчас</button>
     </div>
-
-
 
     <!-- Real-time цена -->
     <div class="price-ticker">
@@ -35,22 +40,20 @@
         <span id="rt-price">—</span>
         <span id="rt-change" class="change-neutral">—</span>
     </div>
-
 </header>
 
-<!-- ── Layout ──────────────────────────────────────────── -->
-<main class="main">
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- ВКЛАДКА: ГРАФИК                                        -->
+<!-- ══════════════════════════════════════════════════════ -->
+<main class="main" id="page-chart">
 
-    <!-- Графики -->
     <div class="chart-area">
         <div id="chart-main"></div>
         <div id="chart-sub"></div>
     </div>
 
-    <!-- Сайдбар -->
     <aside class="sidebar">
 
-        <!-- Редактор формул -->
         <div class="panel">
             <div class="panel-header">📐 Редактор формул</div>
             <div class="panel-body">
@@ -67,7 +70,7 @@
                     <b>BB:</b> BB_UPPER(n,s) · BB_LOWER(n,s)<br>
                     <b>Утил:</b> MAX(x,n) · MIN(x,n) · STD(x,n)<br>
                     <b>Сигнал:</b> CROSS_UP(a,b) · CROSS_DOWN(a,b)<br>
-                    <b>Условие:</b> IF(условие, да, нет)
+                    <b>Условие:</b> IF(cond, yes, no)
                 </div>
 
                 <div class="row mt">
@@ -87,21 +90,19 @@
             </div>
         </div>
 
-        <!-- Шаблоны -->
         <div class="panel mt">
             <div class="panel-header">⚡ Шаблоны</div>
             <div class="panel-body templates">
                 <button class="btn btn-tpl" onclick="tpl('ema_diff')">EMA Diff</button>
-                <button class="btn btn-tpl" onclick="tpl('rsi')">RSI Зоны</button>
+                <button class="btn btn-tpl" onclick="tpl('rsi')">RSI</button>
                 <button class="btn btn-tpl" onclick="tpl('typical')">Typical</button>
                 <button class="btn btn-tpl" onclick="tpl('volatility')">Волатильность</button>
                 <button class="btn btn-tpl" onclick="tpl('vol_pressure')">Объём</button>
                 <button class="btn btn-tpl" onclick="tpl('cross')">EMA Cross</button>
-                <button class="btn btn-tpl" onclick="tpl('bb')">Bollinger</button>
+                <button class="btn btn-tpl" onclick="tpl('bb')">BB Width</button>
             </div>
         </div>
 
-        <!-- Список индикаторов -->
         <div class="panel mt">
             <div class="panel-header">
                 📊 Индикаторы
@@ -115,10 +116,105 @@
     </aside>
 </main>
 
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- ВКЛАДКА: СКАНЕР                                        -->
+<!-- ══════════════════════════════════════════════════════ -->
+<main class="main" id="page-scanner" style="display:none">
+
+    <div class="scanner-layout">
+
+        <!-- Левая колонка: настройки -->
+        <div class="scanner-settings">
+
+            <!-- Тикеры -->
+            <div class="panel">
+                <div class="panel-header">
+                    📋 Тикеры
+                    <span id="scan-count" class="muted" style="float:right;font-weight:400">0 тикеров</span>
+                </div>
+                <div class="panel-body">
+                    <div class="row">
+                        <input id="scan-add-input" class="input" placeholder="Добавить тикер (SBER)"/>
+                        <button class="btn btn-primary" onclick="addTicker()">+</button>
+                    </div>
+                    <div id="scan-ticker-list" class="ticker-tags mt"></div>
+                </div>
+            </div>
+
+            <!-- Формула -->
+            <div class="panel mt">
+                <div class="panel-header">📐 Условие сигнала</div>
+                <div class="panel-body">
+                    <label class="label">Название</label>
+                    <input id="scan-formula-name" class="input" value="RSI Перепроданность"/>
+
+                    <label class="label mt">Формула (RESULT = условие)</label>
+                    <textarea id="scan-formula" class="code-editor" rows="4">RESULT = RSI(14) &lt; 30</textarea>
+
+                    <div class="hint">
+                        Формула должна возвращать <b>True/False</b> или <b>1/0</b><br>
+                        Примеры:<br>
+                        RESULT = RSI(14) &lt; 30<br>
+                        RESULT = CROSS_UP(EMA(9), EMA(21))<br>
+                        RESULT = VOLUME &gt; SMA(VOLUME, 20) * 2
+                    </div>
+
+                    <div class="row mt">
+                        <label class="label">Интервал</label>
+                        <select id="scan-interval" class="select">
+                            <option value="1m">1 мин</option>
+                            <option value="5m">5 мин</option>
+                            <option value="15m">15 мин</option>
+                            <option value="1h" selected>1 час</option>
+                            <option value="1d">1 день</option>
+                        </select>
+                    </div>
+
+                    <div class="row mt" style="gap:6px">
+                        <button id="btn-scan" class="btn btn-success" onclick="runScanner()" style="flex:1">
+                            ▶ Сканировать
+                        </button>
+                        <button id="btn-auto-scan" class="btn btn-template" onclick="toggleAutoScan()">
+                            🔄 Авто
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Шаблоны сканера -->
+            <div class="panel mt">
+                <div class="panel-header">⚡ Шаблоны</div>
+                <div id="scan-templates" class="panel-body templates"></div>
+            </div>
+
+        </div>
+
+        <!-- Правая колонка: результаты -->
+        <div class="scanner-results-wrap">
+            <div class="panel" style="height:100%">
+                <div class="panel-header">
+                    📊 Результаты
+                    <span id="scan-status" class="muted" style="float:right;font-weight:400">Нажмите "Сканировать"</span>
+                </div>
+                <!-- обёртка для flex-роста -->
+                <div class="scan-results-outer">
+                    <div id="scan-results" class="scan-results">
+                        <div class="muted" style="padding:20px;text-align:center">
+                            Настройте параметры и нажмите ▶ Сканировать
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</main>
+
 <!-- Статус-бар -->
 <div id="status" class="statusbar">Готов</div>
 
 <script src="/static/chart.js"></script>
 <script src="/static/editor.js"></script>
+<script src="/static/scanner.js"></script>
 </body>
 </html>
