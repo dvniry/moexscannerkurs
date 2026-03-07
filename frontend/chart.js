@@ -52,8 +52,10 @@ const subChart = LightweightCharts.createChart(subEl, {
 
 // Синхронизация скролла
 mainChart.timeScale().subscribeVisibleTimeRangeChange(r => {
-    if (r) subChart.timeScale().setVisibleRange(r);
+    if (!r) return;
+    try { subChart.timeScale().setVisibleRange(r); } catch (_) {}
 });
+
 
 // Свечной ряд
 state.candleSeries = mainChart.addCandlestickSeries({
@@ -94,7 +96,7 @@ async function loadChart() {
             time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
         })));
 
-        state.candleCount = data.candles.length; 
+        state.candleCount = data.candles.length;
 
         mainChart.timeScale().fitContent();
 
@@ -103,6 +105,12 @@ async function loadChart() {
 
         state.ticker   = ticker;
         state.interval = interval;
+
+        // ← ФИКС: сохраняем figi и ticker глобально для стратегии/sandbox
+        window._lastFigi   = data.figi;
+        window._lastTicker = data.ticker;
+        // ────────────────────────────────────────────────────────────────
+
         document.getElementById('rt-ticker').textContent = ticker;
 
         connectWS(ticker, interval);
@@ -112,6 +120,7 @@ async function loadChart() {
         setStatus(`❌ ${e.message}`);
     }
 }
+
 
 // ── Кнопка "К текущей свече" ──────────────────────────────
 function scrollToNow() {
@@ -213,19 +222,25 @@ function setStatus(msg) {
 
 // ── Переключение вкладок ──────────────────────────────────
 function switchTab(name) {
-    document.getElementById('page-chart').style.display   = name === 'chart'   ? 'flex' : 'none';
-    document.getElementById('page-scanner').style.display = name === 'scanner' ? 'flex' : 'none';
-    document.getElementById('tab-chart').classList.toggle('active',   name === 'chart');
-    document.getElementById('tab-scanner').classList.toggle('active', name === 'scanner');
+    ['chart', 'scanner', 'strategy'].forEach(n => {
+        document.getElementById(`page-${n}`).style.display = 'none';
+        document.getElementById(`tab-${n}`).classList.remove('active');
+    });
 
-    // Перерисовываем графики при возврате на вкладку
+    document.getElementById(`page-${name}`).style.display = 'flex';
+    document.getElementById(`tab-${name}`).classList.add('active');
+
     if (name === 'chart') {
         setTimeout(() => {
             mainChart.applyOptions({ width: mainEl.clientWidth, height: mainEl.clientHeight });
             subChart.applyOptions({  width: subEl.clientWidth,  height: subEl.clientHeight  });
         }, 50);
     }
+
+    // Инициализируем шаблоны при первом открытии
+    if (name === 'strategy') initStrategy();
 }
+
 
 // ── Запуск ────────────────────────────────────────────────
 loadChart();

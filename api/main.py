@@ -12,10 +12,16 @@ from litestar.openapi import OpenAPIConfig
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from api.routes.candles import get_candles
-from api.routes.formula import calculate_formula
-from api.routes.ws      import price_ws
-from api.routes.scanner import run_scanner, get_tickers
+from api.routes.candles  import get_candles
+from api.routes.formula  import calculate_formula
+from api.routes.ws       import price_ws
+from api.routes.scanner  import run_scanner, get_tickers
+from api.routes.strategy import (
+    run_strategy_endpoint,
+    post_order,
+    sandbox_topup,       # ← новый
+    sandbox_portfolio,   # ← новый
+)
 
 FRONTEND_DIR = str(Path(__file__).parent.parent / "frontend")
 
@@ -27,27 +33,29 @@ async def index() -> bytes:
 
 @get("/health")
 async def health() -> dict:
-    return {"status": "ok", "version": "0.5.0"}
+    return {"status": "ok", "version": "0.7.0"}
 
 
-# ── Роутер с префиксом /api ───────────────────────────────
 api_router = Router(
     path="/api",
     route_handlers=[
         get_candles,
         calculate_formula,
-        run_scanner,      # ← новый
-        get_tickers,      # ← новый
+        run_scanner,
+        get_tickers,
+        run_strategy_endpoint,
+        post_order,
+        sandbox_topup,       # ← новый
+        sandbox_portfolio,   # ← новый
     ],
 )
 
-# ── Приложение ────────────────────────────────────────────
 app = Litestar(
     route_handlers=[
         index,
         health,
-        api_router,   # ← /api/candles, /api/formula
-        price_ws,     # ← /ws/price
+        api_router,
+        price_ws,
     ],
     static_files_config=[
         StaticFilesConfig(
@@ -59,9 +67,9 @@ app = Litestar(
     cors_config=CORSConfig(allow_origins=["*"]),
     openapi_config=OpenAPIConfig(
         title="MOEX Scanner API",
-        version="0.5.0",
+        version="0.7.0",
     ),
-    debug=True,   # ← включаем для видимости ошибок
+    debug=True,
 )
 
 
@@ -76,14 +84,9 @@ if __name__ == "__main__":
     threading.Thread(target=open_browser, daemon=True).start()
 
     print("\n" + "=" * 50)
-    print("🚀  MOEX Scanner")
+    print("🚀  MOEX Scanner v0.7")
     print("    http://localhost:8050")
     print("    API docs: http://localhost:8050/schema")
     print("=" * 50 + "\n")
 
-    uvicorn.run(
-        app,               # ← передаём объект напрямую, не строку
-        host="0.0.0.0",
-        port=8050,
-        reload=False,
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8050, reload=False)

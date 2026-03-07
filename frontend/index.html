@@ -17,6 +17,7 @@
     <nav class="tabs">
         <button class="tab active" id="tab-chart"   onclick="switchTab('chart')">График</button>
         <button class="tab"        id="tab-scanner" onclick="switchTab('scanner')">Сканер</button>
+        <button class="tab" id="tab-strategy" onclick="switchTab('strategy')">Стратегии</button>
     </nav>
 
     <!-- Toolbar графика -->
@@ -210,11 +211,96 @@
     </div>
 </main>
 
+<!-- ВКЛАДКА: СТРАТЕГИИ -->
+<main class="main" id="page-strategy" style="display:none">
+  <div class="scanner-layout">
+
+    <!-- Левая колонка: редактор -->
+    <div class="scanner-settings">
+
+      <div class="panel">
+        <div class="panel-header">⚡ Шаблоны</div>
+        <div id="strat-templates" class="panel-body templates"></div>
+      </div>
+
+      <div class="panel mt">
+        <div class="panel-header">🤖 Стратегия</div>
+        <div class="panel-body">
+
+          <label class="label">Название</label>
+          <input id="strat-name" class="input" value="My Strategy"/>
+
+          <label class="label mt">Entry — сигнал входа</label>
+          <textarea id="strat-entry" class="code-editor" rows="3">RESULT = CROSS_UP(EMA(9), EMA(21))</textarea>
+
+          <label class="label mt">Exit — сигнал выхода</label>
+          <textarea id="strat-exit" class="code-editor" rows="3">RESULT = CROSS_DOWN(EMA(9), EMA(21))</textarea>
+
+          <label class="label mt">Stop-loss (опционально)</label>
+          <textarea id="strat-stop" class="code-editor" rows="2" placeholder="RESULT = CLOSE < EMA(21) * 0.97"></textarea>
+
+          <div class="row mt">
+            <label class="label">Размер позиции %</label>
+            <input id="strat-size" class="input" type="number" value="10" min="1" max="100" style="width:70px"/>
+          </div>
+
+          <div class="hint mt">
+            Тикер и интервал берутся из шапки (График).<br>
+            Сигналы отображаются прямо на графике стрелками.
+          </div>
+
+          <div class="row mt" style="gap:6px">
+            <button id="btn-run-strat" class="btn btn-success" onclick="runStrategy()" style="flex:1">
+              ▶ Запустить
+            </button>
+            <button class="btn btn-sm" onclick="clearStrategySignals()">✕ Очистить</button>
+          </div>
+
+        </div>
+      </div>
+      <!-- Портфель Sandbox — добавь после панели стратегии -->
+        <div class="panel mt">
+            <div class="panel-header">
+                💼 Sandbox портфель
+                <button class="btn btn-sm" onclick="refreshSandboxPortfolio()" style="float:right">
+                    🔄
+                </button>
+            </div>
+            <div id="sandbox-portfolio" class="panel-body">
+                <div class="muted">Нажмите 🔄 для обновления</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Правая колонка: список сигналов -->
+    <div class="scanner-results-wrap">
+      <div class="panel" style="height:100%">
+        <div class="panel-header">
+          📋 Сигналы
+          <span id="strat-status" class="muted" style="float:right;font-weight:400">
+            Нажмите ▶ Запустить
+          </span>
+        </div>
+        <div class="scan-results-outer">
+          <div id="strat-signals" class="scan-results">
+            <div class="muted" style="padding:20px;text-align:center">
+              Запустите стратегию — сигналы появятся здесь и на графике
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+
 <!-- Статус-бар -->
 <div id="status" class="statusbar">Готов</div>
 
 <script src="/static/chart.js"></script>
 <script src="/static/editor.js"></script>
 <script src="/static/scanner.js"></script>
+<script src="/static/strategy.js"></script>
 </body>
 </html>
