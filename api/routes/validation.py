@@ -76,3 +76,22 @@ def validate_name(name: str) -> str:
     if not n:
         return "Strategy"
     return n[:_MAX_NAME_LEN]
+
+_VALID_INTERVALS = {"1m", "5m", "15m", "1h", "1d"}
+
+def validate_interval(interval: str) -> str:
+    if interval not in _VALID_INTERVALS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Неверный интервал '{interval}'. Допустимые: {sorted(_VALID_INTERVALS)}"
+        )
+    return interval
+
+
+def validate_size(size: float) -> float:
+    if not (0.1 <= size <= 100.0):
+        raise HTTPException(
+            status_code=422,
+            detail=f"size должен быть от 0.1 до 100, получено: {size}"
+        )
+    return size

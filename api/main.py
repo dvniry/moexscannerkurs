@@ -15,6 +15,7 @@ from litestar.config.cors import CORSConfig
 from litestar.static_files import StaticFilesConfig
 from litestar.openapi import OpenAPIConfig
 from litestar.middleware.rate_limit import RateLimitConfig
+from litestar.stores.memory import MemoryStore
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -58,8 +59,16 @@ api_router = Router(
     ],
 )
 
+rate_limit_config = RateLimitConfig(
+    rate_limit=("minute", 60),   # 10 для теста
+    exclude=["/schema"],
+    store="rate_limit",
+)
+
 app = Litestar(
     route_handlers=[index, health, api_router, price_ws],
+    middleware=[rate_limit_config.middleware],
+    stores={"rate_limit": MemoryStore()},
     static_files_config=[
         StaticFilesConfig(
             directories=[FRONTEND_DIR],

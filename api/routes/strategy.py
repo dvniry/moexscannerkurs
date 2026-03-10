@@ -12,6 +12,7 @@ from api.routes.candles    import get_client, _executor
 from api.routes.validation import (
     validate_ticker, validate_formula, validate_days,
     validate_lots, validate_direction, validate_name,
+    validate_interval, validate_size,
 )
 from strategy.base   import FormulaStrategy
 from strategy.engine import run_strategy
@@ -82,7 +83,8 @@ def _run_strategy_sync(req: StrategyRequest):
     stop   = validate_formula(req.stop_formula,  'stop_formula')
     days   = validate_days(req.days)
     name   = validate_name(req.name)
-
+    interval = validate_interval(req.interval)
+    size     = validate_size(req.size)
     client   = get_client()
     figi     = client.find_figi(ticker)
     df       = client.get_candles(figi=figi, interval=req.interval, days_back=days)

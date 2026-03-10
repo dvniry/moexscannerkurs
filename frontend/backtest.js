@@ -65,6 +65,12 @@ async function runBacktest() {
 
         const data = await r.json();
 
+        if (!r.ok) {
+            console.error('[Backtest] Server error:', data);   // ← увидишь detail
+            setBtStatus(`❌ ${data.detail || 'Ошибка сервера ' + r.status}`);
+            return;
+        }
+
         if (data.error) { setBtStatus(`❌ ${data.error}`); return; }
 
         btState.result = data;
