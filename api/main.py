@@ -10,12 +10,14 @@ from litestar.config.cors import CORSConfig
 from litestar.static_files import StaticFilesConfig
 from litestar.openapi import OpenAPIConfig
 
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from api.routes.candles  import get_candles
 from api.routes.formula  import calculate_formula
 from api.routes.ws       import price_ws
 from api.routes.scanner  import run_scanner, get_tickers
+from api.routes.backtest import run_backtest_endpoint
 from api.routes.strategy import (
     run_strategy_endpoint,
     post_order,
@@ -45,8 +47,9 @@ api_router = Router(
         get_tickers,
         run_strategy_endpoint,
         post_order,
-        sandbox_topup,       # ← новый
-        sandbox_portfolio,   # ← новый
+        sandbox_topup,
+        sandbox_portfolio,
+        run_backtest_endpoint,   # ← новый
     ],
 )
 
@@ -73,6 +76,8 @@ app = Litestar(
 )
 
 
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -84,7 +89,7 @@ if __name__ == "__main__":
     threading.Thread(target=open_browser, daemon=True).start()
 
     print("\n" + "=" * 50)
-    print("🚀  MOEX Scanner v0.7")
+    print("🚀  MOEX Scanner v0.8")
     print("    http://localhost:8050")
     print("    API docs: http://localhost:8050/schema")
     print("=" * 50 + "\n")

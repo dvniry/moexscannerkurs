@@ -18,6 +18,7 @@
         <button class="tab active" id="tab-chart"   onclick="switchTab('chart')">График</button>
         <button class="tab"        id="tab-scanner" onclick="switchTab('scanner')">Сканер</button>
         <button class="tab" id="tab-strategy" onclick="switchTab('strategy')">Стратегии</button>
+        <button class="tab" id="tab-backtest" onclick="switchTab('backtest')">Бэктест</button>
     </nav>
 
     <!-- Toolbar графика -->
@@ -294,6 +295,111 @@
   </div>
 </main>
 
+<!-- ВКЛАДКА: БЭКТЕСТ -->
+<main class="main" id="page-backtest" style="display:none">
+  <div class="scanner-layout">
+
+    <!-- Левая колонка: параметры -->
+    <div class="scanner-settings">
+
+      <div class="panel">
+        <div class="panel-header">⚡ Шаблоны</div>
+        <div id="bt-templates" class="panel-body templates"></div>
+      </div>
+
+      <div class="panel mt">
+        <div class="panel-header">⚙️ Параметры</div>
+        <div class="panel-body">
+
+          <label class="label">Название</label>
+          <input id="bt-name" class="input" value="Backtest"/>
+
+          <label class="label mt">Entry</label>
+          <textarea id="bt-entry" class="code-editor" rows="3">RESULT = CROSS_UP(EMA(9), EMA(21))</textarea>
+
+          <label class="label mt">Exit</label>
+          <textarea id="bt-exit" class="code-editor" rows="3">RESULT = CROSS_DOWN(EMA(9), EMA(21))</textarea>
+
+          <label class="label mt">Stop-loss (опционально)</label>
+          <textarea id="bt-stop" class="code-editor" rows="2" placeholder="RESULT = CLOSE < EMA(21) * 0.97"></textarea>
+
+          <div class="row mt">
+            <div style="flex:1">
+              <label class="label">Капитал ₽</label>
+              <input id="bt-capital" class="input" type="number" value="100000"/>
+            </div>
+            <div style="flex:1">
+              <label class="label">Размер %</label>
+              <input id="bt-size" class="input" type="number" value="10" min="1" max="100"/>
+            </div>
+          </div>
+
+          <div class="row mt">
+            <div style="flex:1">
+              <label class="label">Интервал</label>
+              <select id="bt-interval" class="select">
+                <option value="1h">1 час</option>
+                <option value="1d" selected>1 день</option>
+              </select>
+            </div>
+            <div style="flex:1">
+              <label class="label">Дней истории</label>
+              <input id="bt-days" class="input" type="number" value="365"/>
+            </div>
+          </div>
+
+          <div class="hint mt">
+            Тикер берётся из шапки (График).<br>
+            Комиссия: 0.05% с каждой сделки.<br>
+            Размер позиции — % от текущего капитала.
+          </div>
+
+          <button id="btn-run-bt" class="btn btn-success full mt" onclick="runBacktest()">
+            ▶ Запустить бэктест
+          </button>
+
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Правая колонка: результаты -->
+    <div class="scanner-results-wrap">
+      <div class="panel" style="height:100%;display:flex;flex-direction:column">
+
+        <div class="panel-header">
+          📊 Результаты
+          <span id="bt-status" class="muted" style="float:right;font-weight:400">
+            Нажмите ▶ Запустить
+          </span>
+        </div>
+
+        <!-- Метрики -->
+        <div id="bt-stats" class="panel-body" style="flex-shrink:0">
+          <div class="muted">Запустите бэктест — здесь появятся метрики</div>
+        </div>
+
+        <!-- График кривой капитала -->
+        <div id="bt-equity-chart" style="flex-shrink:0;padding:0 10px 10px;min-height:220px"></div>
+
+        <!-- Таблица сделок -->
+        <div class="scan-results-outer" style="flex:1;min-height:0;display:flex;flex-direction:column">
+          <div style="padding:7px 10px;font-weight:600;border-top:1px solid var(--border);font-size:12px;flex-shrink:0">
+            📋 Сделки
+          </div>
+          <div id="bt-trades" class="scan-results">
+            <div class="muted" style="padding:20px;text-align:center">
+              Сделки появятся после запуска бэктеста
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+</main>
+
 
 <!-- Статус-бар -->
 <div id="status" class="statusbar">Готов</div>
@@ -302,5 +408,6 @@
 <script src="/static/editor.js"></script>
 <script src="/static/scanner.js"></script>
 <script src="/static/strategy.js"></script>
+<script src="/static/backtest.js"></script>
 </body>
 </html>

@@ -226,7 +226,7 @@ function setStatus(msg) {
 
 // ── Переключение вкладок ──────────────────────────────────
 function switchTab(name) {
-    ['chart', 'scanner', 'strategy'].forEach(n => {
+    ['chart', 'scanner', 'strategy', 'backtest'].forEach(n => {
         document.getElementById(`page-${n}`).style.display = 'none';
         document.getElementById(`tab-${n}`).classList.remove('active');
     });
@@ -241,9 +241,10 @@ function switchTab(name) {
         }, 50);
     }
 
-    // Инициализируем шаблоны при первом открытии
     if (name === 'strategy') initStrategy();
+    if (name === 'backtest') initBacktest();
 }
+
 
 
 // ── Запуск ────────────────────────────────────────────────

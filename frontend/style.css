@@ -37,7 +37,8 @@ body {
 /* ── Страницы: занимают оставшееся место ── */
 #page-chart,
 #page-scanner,
-#page-strategy {
+#page-strategy,
+#page-backtest {
     flex: 1;
     display: flex;
     min-height: 0;      /* ключевое для flex-детей */
@@ -189,3 +190,13 @@ body {
 .p-figi { font-weight:600; font-size:10px; color:var(--muted); }
 .p-qty { color:var(--accent); }
 .p-price { text-align:right; font-family:monospace; }
+
+/* ── Бэктест метрики ── */
+.bt-metrics { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; }
+.bt-metric { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); padding:8px; text-align:center; }
+.bt-metric-val { font-size:15px; font-weight:700; margin-bottom:3px; }
+.bt-metric-lbl { font-size:10px; color:var(--muted); }
+
+/* ── Бэктест таблица сделок ── */
+.bt-trade-row { display:grid; grid-template-columns:140px 140px 90px 90px 90px 70px 70px; gap:6px; padding:6px 10px; border-bottom:1px solid var(--border); font-size:11px; }
+.bt-trade-header { color:var(--muted); font-weight:600; background:var(--bg2); position:sticky; top:0; }

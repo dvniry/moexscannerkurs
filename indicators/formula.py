@@ -94,11 +94,44 @@ def _std(series: pd.Series, period: int) -> pd.Series:
 def _prev(series: pd.Series) -> pd.Series:
     return series.shift(1)
 
-def _cross_up(a: pd.Series, b: pd.Series) -> pd.Series:
+def _cross_up(a, b) -> pd.Series:
+    """Пересечение вверх: a пересекает b снизу вверх.
+    a и b могут быть Series или скалярами.
+    """
+    # Приводим к Series с общим индексом
+    if isinstance(a, pd.Series):
+        idx = a.index
+    elif isinstance(b, pd.Series):
+        idx = b.index
+    else:
+        raise TypeError("CROSS_UP ожидает хотя бы один аргумент типа Series")
+
+    if not isinstance(a, pd.Series):
+        a = pd.Series(float(a), index=idx)
+    if not isinstance(b, pd.Series):
+        b = pd.Series(float(b), index=idx)
+
     return ((a.shift(1) <= b.shift(1)) & (a > b)).astype(float)
 
-def _cross_down(a: pd.Series, b: pd.Series) -> pd.Series:
+
+def _cross_down(a, b) -> pd.Series:
+    """Пересечение вниз: a пересекает b сверху вниз.
+    a и b могут быть Series или скалярами.
+    """
+    if isinstance(a, pd.Series):
+        idx = a.index
+    elif isinstance(b, pd.Series):
+        idx = b.index
+    else:
+        raise TypeError("CROSS_DOWN ожидает хотя бы один аргумент типа Series")
+
+    if not isinstance(a, pd.Series):
+        a = pd.Series(float(a), index=idx)
+    if not isinstance(b, pd.Series):
+        b = pd.Series(float(b), index=idx)
+
     return ((a.shift(1) >= b.shift(1)) & (a < b)).astype(float)
+
 
 def _if(cond, true_val, false_val) -> pd.Series:
     """Условный выбор: IF(RSI(14) > 70, 1, 0)."""
