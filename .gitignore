@@ -2,3 +2,8 @@
 __pycache__
 venv
 карта шагов
+CHECKLIST.md
+*.cer
+*.crt
+*.pem
+russian_ca.cer

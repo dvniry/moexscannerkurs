@@ -8,14 +8,20 @@ from litestar.exceptions import HTTPException
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from api.routes.candles  import get_client, _to_unix, _executor
-from strategy.base       import FormulaStrategy
-from strategy.backtest   import run_backtest, BacktestResult
+from api.routes.candles    import get_client, _executor
+from api.routes.validation import (
+    validate_ticker, validate_formula, validate_days,
+    validate_capital, validate_name,
+)
+from strategy.base     import FormulaStrategy
+from strategy.backtest import run_backtest
 
 MAX_DAYS = {
     "1m": 1, "5m": 3, "15m": 7, "1h": 30, "1d": 365,
 }
 
+
+# ── Датаклассы ────────────────────────────────────────────
 
 @dataclass
 class BacktestRequest:
@@ -55,7 +61,6 @@ class BacktestResponse:
     name:         str
     trades:       List[TradePoint]
     equity_curve: List[EquityPoint]
-    # Метрики
     initial:      float
     final:        float
     total_return: float
@@ -73,23 +78,34 @@ class BacktestResponse:
     error:        Optional[str] = None
 
 
-def _run_bt(req: BacktestRequest) -> BacktestResult:
+# ── Логика ────────────────────────────────────────────────
+
+def _run_bt(req: BacktestRequest):
+    ticker  = validate_ticker(req.ticker)
+    entry   = validate_formula(req.entry_formula, 'entry_formula')
+    exit_   = validate_formula(req.exit_formula,  'exit_formula')
+    stop    = validate_formula(req.stop_formula,  'stop_formula')
+    days    = validate_days(req.days)
+    capital = validate_capital(req.capital)
+    name    = validate_name(req.name)
+
     client   = get_client()
-    figi     = client.find_figi(req.ticker.upper())
-    days     = req.days or MAX_DAYS.get(req.interval, 365)
+    figi     = client.find_figi(ticker)
     df       = client.get_candles(figi=figi, interval=req.interval, days_back=days)
 
     strategy = FormulaStrategy(
-        name          = req.name,
-        entry_formula = req.entry_formula,
-        exit_formula  = req.exit_formula,
-        stop_formula  = req.stop_formula,
+        name          = name,
+        entry_formula = entry,
+        exit_formula  = exit_,
+        stop_formula  = stop,
         size          = req.size,
         interval      = req.interval,
         params        = req.params,
     )
-    return run_backtest(strategy, df, initial_capital=req.capital)
+    return run_backtest(strategy, df, initial_capital=capital)
 
+
+# ── Endpoint ──────────────────────────────────────────────
 
 @post("/backtest")
 async def run_backtest_endpoint(data: BacktestRequest) -> BacktestResponse:
@@ -109,30 +125,19 @@ async def run_backtest_endpoint(data: BacktestRequest) -> BacktestResponse:
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    trades = [
-        TradePoint(
-            entry_time  = t.entry_time,
-            exit_time   = t.exit_time,
-            entry_price = t.entry_price,
-            exit_price  = t.exit_price,
-            action      = t.action,
-            pnl         = t.pnl,
-            pnl_pct     = t.pnl_pct,
-            size        = t.size,
-        )
-        for t in result.trades
-    ]
-
-    equity = [
-        EquityPoint(time=e.time, equity=e.equity)
-        for e in result.equity_curve
-    ]
-
     return BacktestResponse(
         ticker       = data.ticker.upper(),
         name         = data.name,
-        trades       = trades,
-        equity_curve = equity,
+        trades       = [TradePoint(
+            entry_time  = t.entry_time,  exit_time   = t.exit_time,
+            entry_price = t.entry_price, exit_price  = t.exit_price,
+            action      = t.action,      pnl         = t.pnl,
+            pnl_pct     = t.pnl_pct,     size        = t.size,
+        ) for t in result.trades],
+        equity_curve = [
+            EquityPoint(time=e.time, equity=e.equity)
+            for e in result.equity_curve
+        ],
         initial      = result.initial,
         final        = result.final,
         total_return = result.total_return,

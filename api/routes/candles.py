@@ -31,6 +31,10 @@ def _fetch_candles(ticker: str, interval: str, days: int) -> tuple:
     """Синхронный вызов — выполняется в потоке, не блокирует event loop."""
     client = get_client()
     figi   = client.find_figi(ticker.upper())
+
+    if not figi:                          # ← добавь
+        raise ValueError(f"Тикер '{ticker}' не найден. Проверьте правильность написания.")
+    
     df     = client.get_candles(figi=figi, interval=interval, days_back=days)
     return figi, df
 

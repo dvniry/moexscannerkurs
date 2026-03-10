@@ -1,5 +1,10 @@
 """MOEX Scanner — точка входа Litestar."""
+from __future__ import annotations
+
 import os
+_cert = os.path.join(os.path.dirname(__file__), '..', 'russian_ca.cer')
+if os.path.exists(_cert):
+    os.environ['GRPC_DEFAULT_SSL_ROOTS_FILE_PATH'] = os.path.abspath(_cert)
 import sys
 import threading
 import webbrowser
@@ -9,7 +14,7 @@ from litestar import Litestar, MediaType, get, Router
 from litestar.config.cors import CORSConfig
 from litestar.static_files import StaticFilesConfig
 from litestar.openapi import OpenAPIConfig
-
+from litestar.middleware.rate_limit import RateLimitConfig
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -21,8 +26,8 @@ from api.routes.backtest import run_backtest_endpoint
 from api.routes.strategy import (
     run_strategy_endpoint,
     post_order,
-    sandbox_topup,       # ← новый
-    sandbox_portfolio,   # ← новый
+    sandbox_topup,
+    sandbox_portfolio,
 )
 
 FRONTEND_DIR = str(Path(__file__).parent.parent / "frontend")
@@ -35,7 +40,7 @@ async def index() -> bytes:
 
 @get("/health")
 async def health() -> dict:
-    return {"status": "ok", "version": "0.7.0"}
+    return {"status": "ok", "version": "0.8.0"}
 
 
 api_router = Router(
@@ -49,17 +54,12 @@ api_router = Router(
         post_order,
         sandbox_topup,
         sandbox_portfolio,
-        run_backtest_endpoint,   # ← новый
+        run_backtest_endpoint,
     ],
 )
 
 app = Litestar(
-    route_handlers=[
-        index,
-        health,
-        api_router,
-        price_ws,
-    ],
+    route_handlers=[index, health, api_router, price_ws],
     static_files_config=[
         StaticFilesConfig(
             directories=[FRONTEND_DIR],
@@ -67,31 +67,31 @@ app = Litestar(
             name="static",
         )
     ],
-    cors_config=CORSConfig(allow_origins=["*"]),
+    cors_config=CORSConfig(
+        allow_origins=["http://localhost:8050"],   # 7.2: убрали *
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    ),
     openapi_config=OpenAPIConfig(
         title="MOEX Scanner API",
-        version="0.7.0",
+        version="0.8.0",
     ),
-    debug=True,
+    debug=False,   # в продакшне False
 )
-
-
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    def open_browser():
+    def _open_browser() -> None:
         import time
         time.sleep(1.5)
         webbrowser.open("http://localhost:8050")
 
-    threading.Thread(target=open_browser, daemon=True).start()
+    threading.Thread(target=_open_browser, daemon=True).start()
 
-    print("\n" + "=" * 50)
-    print("🚀  MOEX Scanner v0.8")
-    print("    http://localhost:8050")
-    print("    API docs: http://localhost:8050/schema")
-    print("=" * 50 + "\n")
+    print("\nMOEX Scanner v0.8")
+    print("http://localhost:8050")
+    print("API docs: http://localhost:8050/schema\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8050, reload=False)

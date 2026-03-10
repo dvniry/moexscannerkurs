@@ -8,16 +8,20 @@ from litestar.exceptions import HTTPException
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from api.routes.candles import get_client, _to_unix, _executor
-from strategy.base      import FormulaStrategy, Signal
-from strategy.engine    import run_strategy
+from api.routes.candles    import get_client, _executor
+from api.routes.validation import (
+    validate_ticker, validate_formula, validate_days,
+    validate_lots, validate_direction, validate_name,
+)
+from strategy.base   import FormulaStrategy
+from strategy.engine import run_strategy
 
 MAX_DAYS = {
     "1m": 1, "5m": 3, "15m": 7, "1h": 30, "1d": 365,
 }
 
 
-# ── Датаклассы запросов/ответов ───────────────────────────
+# ── Датаклассы ────────────────────────────────────────────
 
 @dataclass
 class StrategyRequest:
@@ -36,7 +40,7 @@ class StrategyRequest:
 class SignalPoint:
     time:   int
     price:  float
-    action: str     # BUY | SELL | STOP
+    action: str
     size:   float
     reason: str
 
@@ -53,50 +57,56 @@ class StrategyResponse:
 
 @dataclass
 class OrderRequest:
-    figi:      str
-    direction: str      # BUY | SELL
-    lots:      int
-    price:     float    = 0.0   # 0 = market
-    account_id: str     = ""
+    figi:       str
+    direction:  str
+    lots:       int
+    price:      float = 0.0
+    account_id: str   = ""
 
 
 @dataclass
 class OrderResponse:
-    order_id: str
-    status:   str
-    lots_exec: int
-    price:    float
+    order_id:   str
+    status:     str
+    lots_exec:  int
+    price:      float
     account_id: str = ""
 
 
-# ── Endpoints ─────────────────────────────────────────────
+# ── Логика ────────────────────────────────────────────────
 
 def _run_strategy_sync(req: StrategyRequest):
+    ticker = validate_ticker(req.ticker)
+    entry  = validate_formula(req.entry_formula, 'entry_formula')
+    exit_  = validate_formula(req.exit_formula,  'exit_formula')
+    stop   = validate_formula(req.stop_formula,  'stop_formula')
+    days   = validate_days(req.days)
+    name   = validate_name(req.name)
+
     client   = get_client()
-    figi     = client.find_figi(req.ticker.upper())
-    days     = req.days or MAX_DAYS.get(req.interval, 7)
+    figi     = client.find_figi(ticker)
     df       = client.get_candles(figi=figi, interval=req.interval, days_back=days)
 
     strategy = FormulaStrategy(
-        name          = req.name,
-        entry_formula = req.entry_formula,
-        exit_formula  = req.exit_formula,
-        stop_formula  = req.stop_formula,
+        name          = name,
+        entry_formula = entry,
+        exit_formula  = exit_,
+        stop_formula  = stop,
         size          = req.size,
         interval      = req.interval,
         params        = req.params,
     )
-    result = run_strategy(strategy, df)
-    return result
+    return run_strategy(strategy, df)
 
+
+# ── Endpoints ─────────────────────────────────────────────
 
 @post("/strategy/run")
 async def run_strategy_endpoint(data: StrategyRequest) -> StrategyResponse:
     try:
         loop   = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            _executor,
-            lambda: _run_strategy_sync(data)
+            _executor, lambda: _run_strategy_sync(data)
         )
     except (SyntaxError, ValueError, RuntimeError) as e:
         return StrategyResponse(
@@ -116,18 +126,22 @@ async def run_strategy_endpoint(data: StrategyRequest) -> StrategyResponse:
     ]
 
     return StrategyResponse(
-        name=data.name,
-        ticker=data.ticker.upper(),
-        signals=signals,
-        in_position=result.in_position,
-        stats=result.stats,
-        error=None,
+        name        = data.name,
+        ticker      = data.ticker.upper(),
+        signals     = signals,
+        in_position = result.in_position,
+        stats       = result.stats,
+        error       = None,
     )
 
 
 @post("/strategy/order")
 async def post_order(data: OrderRequest) -> OrderResponse:
-    """Отправить ордер в Tinkoff Sandbox."""
+    validate_direction(data.direction)
+    validate_lots(data.lots)
+    if not data.figi:
+        raise HTTPException(status_code=422, detail="figi обязателен.")
+
     try:
         from strategy.orders import SandboxOrders
         orders   = SandboxOrders()
@@ -136,25 +150,26 @@ async def post_order(data: OrderRequest) -> OrderResponse:
         resp     = await loop.run_in_executor(
             _executor,
             lambda: orders.post_order(
-                figi=data.figi,
-                direction=data.direction,
-                lots=data.lots,
-                price=data.price,
-                order_id=order_id,
+                figi      = data.figi,
+                direction = data.direction,
+                lots      = data.lots,
+                price     = data.price,
+                order_id  = order_id,
             )
         )
         return OrderResponse(**resp)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @get("/strategy/sandbox/topup")
 async def sandbox_topup() -> dict:
-    """Пополнить sandbox на 1 000 000 ₽."""
     try:
         from strategy.orders import SandboxOrders
-        orders = SandboxOrders()
         loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(_executor, lambda: orders.top_up(1_000_000))
+        result = await loop.run_in_executor(
+            _executor, lambda: SandboxOrders().top_up(1_000_000)
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -162,12 +177,12 @@ async def sandbox_topup() -> dict:
 
 @get("/strategy/sandbox/portfolio")
 async def sandbox_portfolio() -> dict:
-    """Получить портфель sandbox."""
     try:
         from strategy.orders import SandboxOrders
-        orders = SandboxOrders()
         loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(_executor, lambda: orders.get_portfolio())
+        result = await loop.run_in_executor(
+            _executor, lambda: SandboxOrders().get_portfolio()
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

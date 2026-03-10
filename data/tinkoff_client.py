@@ -1,204 +1,178 @@
-"""Клиент для работы с Tinkoff Invest API (t-tech-investments)."""
-import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, Optional
-import logging
+"""Клиент для работы с T-Bank Invest API."""
+from __future__ import annotations
 
-# ПРАВИЛЬНЫЙ ИМПОРТ для t-tech-investments
+import logging
+from datetime import timedelta
+from functools import lru_cache
+from typing import Dict, Optional
+
+import pandas as pd
+
 from t_tech.invest import Client, CandleInterval, InstrumentIdType
 from t_tech.invest.utils import now
 
 logger = logging.getLogger(__name__)
 
+# ── Константы ─────────────────────────────────────────────
+TARGET   = "invest-public-api.tbank.ru:443"   # актуальный домен
+SANDBOX  = "sandbox-invest-public-api.tbank.ru:443"
+
+INTERVALS: Dict[str, CandleInterval] = {
+    "1m":  CandleInterval.CANDLE_INTERVAL_1_MIN,
+    "5m":  CandleInterval.CANDLE_INTERVAL_5_MIN,
+    "15m": CandleInterval.CANDLE_INTERVAL_15_MIN,
+    "1h":  CandleInterval.CANDLE_INTERVAL_HOUR,
+    "1d":  CandleInterval.CANDLE_INTERVAL_DAY,
+}
+
 
 class TinkoffDataClient:
-    """Клиент для получения данных из Tinkoff API.
-    
-    Принципы:
-    - Векторизация: возвращаем DataFrame, не списки
-    - Кеширование: избегаем повторных запросов
-    - ООП: инкапсуляция работы с API
+    """Клиент для получения рыночных данных из T-Bank Invest API.
+
+    Особенности:
+    - FIGI кэш в памяти (загружаем список акций один раз за сессию)
+    - Свечи кэшируются по ключу figi+interval+days
+    - Все print убраны — только logger
     """
-    
-    # Маппинг интервалов
-    INTERVALS = {
-        '1m': CandleInterval.CANDLE_INTERVAL_1_MIN,
-        '5m': CandleInterval.CANDLE_INTERVAL_5_MIN,
-        '15m': CandleInterval.CANDLE_INTERVAL_15_MIN,
-        '1h': CandleInterval.CANDLE_INTERVAL_HOUR,
-        '1d': CandleInterval.CANDLE_INTERVAL_DAY,
-    }
-    
+
     def __init__(self, token: str):
-        """Инициализация клиента.
-        
-        Args:
-            token: API токен Tinkoff
-        """
         if not token:
-            raise ValueError("Tinkoff token is required!")
-        
+            raise ValueError("T-Bank token is required")
+
         self.token = token
-        self._cache: Dict[str, pd.DataFrame] = {}
-        logger.info("TinkoffDataClient initialized")
-        print("✅ TinkoffDataClient инициализирован")
-        
-    def get_candles(
-        self, 
-        figi: str, 
-        interval: str = '1h',
-        days_back: int = 100
-    ) -> pd.DataFrame:
-        """Получить исторические свечи.
-        
-        Args:
-            figi: FIGI инструмента
-            interval: Интервал (1m, 5m, 15m, 1h, 1d)
-            days_back: Количество дней назад
-            
-        Returns:
-            DataFrame с колонками: time, open, high, low, close, volume
-        """
-        cache_key = f"{figi}_{interval}_{days_back}"
-        
-        # Проверка кеша
-        if cache_key in self._cache:
-            logger.debug(f"Cache hit: {cache_key}")
-            return self._cache[cache_key].copy()
-        
-        # Запрос к API
+        self._candle_cache: Dict[str, pd.DataFrame] = {}
+        self._figi_cache:   Dict[str, str]          = {}   # ticker → figi
+        self._figi_loaded   = False
+
+        logger.info("TinkoffDataClient initialized (target=%s)", TARGET)
+
+    # ── FIGI ──────────────────────────────────────────────
+
+    def _load_figi_cache(self) -> None:
+        """Загружаем все акции один раз и кэшируем ticker→figi."""
+        if self._figi_loaded:
+            return
         try:
-            with Client(self.token) as client:
-                candles = client.market_data.get_candles(
-                    figi=figi,
-                    from_=now() - timedelta(days=days_back),
-                    to=now(),
-                    interval=self.INTERVALS[interval]
-                ).candles
-        except Exception as e:
-            logger.error(f"Failed to get candles: {e}")
-            print(f"❌ Ошибка получения свечей: {e}")
-            raise
-            
-        if not candles:
-            logger.warning(f"No candles returned for {figi}")
-            print(f"⚠️  Свечи не получены для {figi}")
-            return pd.DataFrame()
-        
-        # Векторизованная обработка: создаем DataFrame за один проход
-        data = {
-            'time': [c.time for c in candles],
-            'open': [self._quotation_to_float(c.open) for c in candles],
-            'high': [self._quotation_to_float(c.high) for c in candles],
-            'low': [self._quotation_to_float(c.low) for c in candles],
-            'close': [self._quotation_to_float(c.close) for c in candles],
-            'volume': [c.volume for c in candles],
-        }
-        
-        df = pd.DataFrame(data)
-        df.set_index('time', inplace=True)
-        
-        # Кешируем
-        self._cache[cache_key] = df
-        
-        logger.info(f"Loaded {len(df)} candles for {figi} ({interval})")
-        print(f"✅ Загружено {len(df)} свечей")
-        
-        return df.copy()
-    
-    def get_ticker_by_figi(self, figi: str) -> Optional[str]:
-        """Получить тикер по FIGI.
-        
-        Args:
-            figi: FIGI инструмента
-            
-        Returns:
-            Тикер или None
-        """
-        try:
-            with Client(self.token) as client:
-                instrument = client.instruments.get_instrument_by(
-                    id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI,
-                    id=figi
-                ).instrument
-                return instrument.ticker if instrument else None
-        except Exception as e:
-            logger.error(f"Failed to get ticker: {e}")
-            return None
-    
-    def find_figi(self, ticker: str) -> Optional[str]:
-        """Найти FIGI по тикеру.
-        
-        Args:
-            ticker: Тикер (например, SBER)
-            
-        Returns:
-            FIGI или None
-        """
-        try:
-            with Client(self.token) as client:
-                instruments = client.instruments.shares(
-                    instrument_status=1  # INSTRUMENT_STATUS_BASE
-                ).instruments
-                
-                for inst in instruments:
-                    if inst.ticker == ticker:
-                        logger.info(f"Found {ticker}: {inst.figi}")
-                        print(f"✅ Найден {ticker}: {inst.figi}")
-                        return inst.figi
-                        
-            logger.warning(f"Ticker {ticker} not found")
-            print(f"⚠️  Тикер {ticker} не найден")
-            return None
-            
-        except Exception as e:
-            logger.error(f"Failed to find FIGI: {e}")
-            print(f"❌ Ошибка поиска FIGI: {e}")
-            return None
-    
-    def get_all_tickers(self) -> pd.DataFrame:
-        """Получить список всех акций.
-        
-        Returns:
-            DataFrame с колонками: ticker, figi, name, currency
-        """
-        try:
-            with Client(self.token) as client:
+            with Client(self.token, target=TARGET) as client:
                 instruments = client.instruments.shares(
                     instrument_status=1
                 ).instruments
-                
-            # Векторизация: сразу DataFrame
-            data = {
-                'ticker': [i.ticker for i in instruments],
-                'figi': [i.figi for i in instruments],
-                'name': [i.name for i in instruments],
-                'currency': [i.currency for i in instruments],
-            }
-            
-            df = pd.DataFrame(data)
-            print(f"✅ Получено {len(df)} акций")
-            return df
-            
+            self._figi_cache = {i.ticker: i.figi for i in instruments}
+            self._figi_loaded = True
+            logger.info("FIGI cache loaded: %d instruments", len(self._figi_cache))
         except Exception as e:
-            logger.error(f"Failed to get tickers: {e}")
-            print(f"❌ Ошибка получения списка акций: {e}")
-            return pd.DataFrame()
-    
-    @staticmethod
-    def _quotation_to_float(quotation) -> float:
-        """Конвертация Quotation в float.
-        
-        Args:
-            quotation: Объект Quotation из API
-            
+            logger.error("Failed to load FIGI cache: %s", e)
+            raise
+
+    def find_figi(self, ticker: str) -> Optional[str]:
+        """Найти FIGI по тикеру (с кэшем — O(1) после первой загрузки)."""
+        ticker = ticker.upper()
+        if ticker not in self._figi_cache:
+            self._load_figi_cache()
+        figi = self._figi_cache.get(ticker)
+        if figi:
+            logger.debug("FIGI found: %s → %s", ticker, figi)
+        else:
+            logger.warning("Ticker not found: %s", ticker)
+        return figi
+
+    def get_ticker_by_figi(self, figi: str) -> Optional[str]:
+        """Обратный поиск: figi → ticker."""
+        if not self._figi_loaded:
+            self._load_figi_cache()
+        for ticker, f in self._figi_cache.items():
+            if f == figi:
+                return ticker
+        return None
+
+    # ── Свечи ─────────────────────────────────────────────
+
+    def get_candles(
+        self,
+        figi:      str,
+        interval:  str = "1h",
+        days_back: int = 100,
+    ) -> pd.DataFrame:
+        """Получить исторические свечи.
+
         Returns:
-            Цена в float
+            DataFrame: index=time, columns=[open, high, low, close, volume]
         """
+        if interval not in INTERVALS:
+            raise ValueError(f"Неизвестный интервал '{interval}'. Доступны: {list(INTERVALS)}")
+
+        cache_key = f"{figi}_{interval}_{days_back}"
+        if cache_key in self._candle_cache:
+            logger.debug("Candle cache hit: %s", cache_key)
+            return self._candle_cache[cache_key].copy()
+
+        try:
+            with Client(self.token, target=TARGET) as client:
+                candles = client.market_data.get_candles(
+                    figi     = figi,
+                    from_    = now() - timedelta(days=days_back),
+                    to       = now(),
+                    interval = INTERVALS[interval],
+                ).candles
+        except Exception as e:
+            logger.error("Failed to get candles for %s: %s", figi, e)
+            raise
+
+        if not candles:
+            logger.warning("No candles returned for %s (%s, %dd)", figi, interval, days_back)
+            return pd.DataFrame()
+
+        df = pd.DataFrame({
+            "time":   [c.time for c in candles],
+            "open":   [self._q(c.open)   for c in candles],
+            "high":   [self._q(c.high)   for c in candles],
+            "low":    [self._q(c.low)    for c in candles],
+            "close":  [self._q(c.close)  for c in candles],
+            "volume": [c.volume          for c in candles],
+        }).set_index("time")
+
+        self._candle_cache[cache_key] = df
+        logger.info("Loaded %d candles: %s %s %dd", len(df), figi, interval, days_back)
+        return df.copy()
+
+    # ── Список инструментов ───────────────────────────────
+
+    def get_all_tickers(self) -> pd.DataFrame:
+        """Все акции: ticker, figi, name, currency."""
+        if not self._figi_loaded:
+            self._load_figi_cache()
+        try:
+            with Client(self.token, target=TARGET) as client:
+                instruments = client.instruments.shares(
+                    instrument_status=1
+                ).instruments
+            return pd.DataFrame([{
+                "ticker":   i.ticker,
+                "figi":     i.figi,
+                "name":     i.name,
+                "currency": i.currency,
+            } for i in instruments])
+        except Exception as e:
+            logger.error("Failed to get all tickers: %s", e)
+            return pd.DataFrame()
+
+    # ── Кэш ───────────────────────────────────────────────
+
+    def clear_cache(self) -> None:
+        """Очистить кэш свечей (FIGI кэш не сбрасывается)."""
+        self._candle_cache.clear()
+        logger.info("Candle cache cleared")
+
+    def clear_all_cache(self) -> None:
+        """Полный сброс всех кэшей."""
+        self._candle_cache.clear()
+        self._figi_cache.clear()
+        self._figi_loaded = False
+        logger.info("All caches cleared")
+
+    # ── Утилиты ───────────────────────────────────────────
+
+    @staticmethod
+    def _q(quotation) -> float:
+        """Quotation → float."""
         return quotation.units + quotation.nano / 1e9
-    
-    def clear_cache(self):
-        """Очистить кеш."""
-        self._cache.clear()
-        logger.info("Cache cleared")
-        print("✅ Кеш очищен")
