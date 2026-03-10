@@ -36,7 +36,8 @@ body {
 
 /* ── Страницы: занимают оставшееся место ── */
 #page-chart,
-#page-scanner {
+#page-scanner,
+#page-strategy {
     flex: 1;
     display: flex;
     min-height: 0;      /* ключевое для flex-детей */

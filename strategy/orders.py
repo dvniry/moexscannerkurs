@@ -18,14 +18,18 @@ class SandboxOrders:
 
     def __init__(self):
         self.token = config.tinkoff.token
+        self._account_id = None   # ← кэш
 
     def _get_or_create_account(self, client) -> str:
-        """Берём первый sandbox аккаунт или создаём новый."""
+        if self._account_id:
+            return self._account_id        # ← возвращаем кэш
         accounts = client.sandbox.get_sandbox_accounts().accounts
         if accounts:
-            return accounts[0].id
-        resp = client.sandbox.open_sandbox_account()
-        return resp.account_id
+            self._account_id = accounts[0].id
+        else:
+            resp = client.sandbox.open_sandbox_account()
+            self._account_id = resp.account_id
+        return self._account_id
 
     def top_up(self, amount: float = 1_000_000.0, currency: str = "rub") -> dict:
         """Пополнить баланс sandbox аккаунта."""

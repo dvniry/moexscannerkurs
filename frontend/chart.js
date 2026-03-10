@@ -95,6 +95,10 @@ async function loadChart() {
         state.candleSeries.setData(data.candles.map(c => ({
             time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
         })));
+        
+        if (window.state?.candleSeries) {
+            try { state.candleSeries.setMarkers([]); } catch(_) {}
+        }
 
         state.candleCount = data.candles.length;
 

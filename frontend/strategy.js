@@ -1,8 +1,8 @@
 // ── Состояние стратегий ───────────────────────────────────
 const strategyState = {
-    signals:     [],
-    inPosition:  false,
-    markers:     [],    // LightweightCharts markers
+    signals:    [],
+    inPosition: false,
+    markers:    [],
 };
 
 // ── Шаблоны стратегий ─────────────────────────────────────
@@ -37,6 +37,13 @@ const STRATEGY_TEMPLATES = {
     },
 };
 
+// ── Статус стратегии ──────────────────────────────────────
+function setStratStatus(msg) {
+    const el = document.getElementById('strat-status');
+    if (el) el.textContent = msg;
+    console.log('[Strategy]', msg);
+}
+
 // ── Применить шаблон ──────────────────────────────────────
 function setStrategyTemplate(key) {
     const t = STRATEGY_TEMPLATES[key];
@@ -55,18 +62,17 @@ function initStrategy() {
         `<button class="btn btn-tpl" onclick="setStrategyTemplate('${key}')">${t.name}</button>`
     ).join('');
 
-    refreshSandboxPortfolio();  // ← загружаем портфель при открытии
+    refreshSandboxPortfolio();
 }
-
 
 // ── Запуск стратегии ──────────────────────────────────────
 async function runStrategy() {
-    const ticker = document.getElementById('ticker').value.trim().toUpperCase();
-    const name   = document.getElementById('strat-name').value.trim()  || 'My Strategy';
-    const entry  = document.getElementById('strat-entry').value.trim();
-    const exit_  = document.getElementById('strat-exit').value.trim();
-    const stop   = document.getElementById('strat-stop').value.trim();
-    const size   = parseFloat(document.getElementById('strat-size').value) || 10;
+    const ticker   = document.getElementById('ticker').value.trim().toUpperCase();
+    const name     = document.getElementById('strat-name').value.trim() || 'My Strategy';
+    const entry    = document.getElementById('strat-entry').value.trim();
+    const exit_    = document.getElementById('strat-exit').value.trim();
+    const stop     = document.getElementById('strat-stop').value.trim();
+    const size     = parseFloat(document.getElementById('strat-size').value) || 10;
     const interval = document.getElementById('interval').value;
 
     if (!entry) { setStratStatus('❌ Введите Entry формулу'); return; }
@@ -77,7 +83,7 @@ async function runStrategy() {
 
     try {
         const r = await fetch('/api/strategy/run', {
-            method: 'POST',
+            method:  'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 ticker,
@@ -109,6 +115,7 @@ async function runStrategy() {
             `✅ Сигналов: ${s.total_signals} | ` +
             `Сделок: ${s.total_trades} | ` +
             `Winrate: ${s.winrate}% | ` +
+            `Avg+: ${s.avg_profit ?? 0}% Avg-: ${s.avg_loss ?? 0}% | ` +
             `${data.in_position ? '🟢 В позиции' : '⚪ Вне позиции'}`
         );
 
@@ -130,9 +137,11 @@ function renderStrategySignals(data) {
     }
 
     const rows = [...data.signals].reverse().map(s => {
-        const dt      = new Date(s.time * 1000).toLocaleString('ru');
-        const icon    = s.action === 'BUY' ? '🟢' : s.action === 'SELL' ? '🔴' : '🛑';
-        const cls     = s.action === 'BUY' ? 'signal-buy' : s.action === 'SELL' ? 'signal-sell' : 'signal-stop';
+        const dt   = new Date(s.time * 1000).toLocaleString('ru');
+        const icon = s.action === 'BUY' ? '🟢' : s.action === 'SELL' ? '🔴' : '🛑';
+        const cls  = s.action === 'BUY' ? 'signal-buy' : s.action === 'SELL' ? 'signal-sell' : 'signal-stop';
+        const sandboxDir = s.action === 'BUY' ? 'BUY' : 'SELL';  // STOP тоже SELL
+
         return `
             <div class="strat-row ${cls}">
                 <span class="strat-icon">${icon}</span>
@@ -140,7 +149,7 @@ function renderStrategySignals(data) {
                 <span class="strat-price">${s.price} ₽</span>
                 <span class="strat-time">${dt}</span>
                 <button class="btn btn-sm btn-sandbox"
-                    onclick="sendSandboxOrder('${s.action}', ${s.price})">
+                    onclick="sendSandboxOrder('${sandboxDir}', ${s.price})">
                     📤 Sandbox
                 </button>
             </div>
@@ -150,11 +159,9 @@ function renderStrategySignals(data) {
     el.innerHTML = rows;
 }
 
-// ── Стрелки на графике (LightweightCharts markers) ────────
+// ── Стрелки на графике ────────────────────────────────────
 function drawSignalsOnChart(signals) {
-    // было: if (!window.candleSeries)
-    // state.candleSeries — так хранится в chart.js
-    const series = window.state?.candleSeries || window.candleSeries;
+    const series = window.state?.candleSeries;
     if (!series) {
         console.warn('candleSeries не найден');
         return;
@@ -177,10 +184,10 @@ function drawSignalsOnChart(signals) {
     series.setMarkers(markers);
 }
 
-
 // ── Очистить сигналы с графика ────────────────────────────
 function clearStrategySignals() {
-    if (window.candleSeries) candleSeries.setMarkers([]);
+    const series = window.state?.candleSeries;
+    if (series) { try { series.setMarkers([]); } catch(_) {} }
     strategyState.signals = [];
     const el = document.getElementById('strat-signals');
     if (el) el.innerHTML = '<div class="muted" style="padding:12px">Сигналов нет</div>';
@@ -199,13 +206,13 @@ async function sendSandboxOrder(direction, price) {
 
     try {
         const r = await fetch('/api/strategy/order', {
-            method: 'POST',
+            method:  'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 figi:      window._lastFigi,
                 direction: direction,
                 lots:      1,
-                price:     0,   // market order
+                price:     0,
             })
         });
 
@@ -216,7 +223,6 @@ async function sendSandboxOrder(direction, price) {
             return;
         }
 
-        // Показываем результат
         setStratStatus(
             `✅ ${direction} исполнен | ` +
             `Цена: ${data.price} ₽ | ` +
@@ -224,7 +230,6 @@ async function sendSandboxOrder(direction, price) {
             `ID: ${data.order_id.slice(0, 8)}...`
         );
 
-        // Подгружаем портфель
         await refreshSandboxPortfolio();
 
     } catch (e) {
@@ -243,41 +248,27 @@ async function refreshSandboxPortfolio() {
         const el = document.getElementById('sandbox-portfolio');
         if (!el) return;
 
-        if (!data.positions?.length) {
-            el.innerHTML = `
-                <div class="portfolio-balance">
-                    💰 Баланс: <b>${data.total.toLocaleString('ru')} ₽</b>
-                </div>
-                <div class="muted" style="padding:8px">Позиций нет</div>
-            `;
-            return;
-        }
+        const positions = (data.positions || []).filter(p => p.figi !== 'RUB000UTSTOM');
 
-        const rows = data.positions
-            .filter(p => p.figi !== 'RUB000UTSTOM')  // скрываем рубли
-            .map(p => `
+        const rows = positions.map(p => {
+            const label = p.ticker || p.figi.slice(0, 12);
+            return `
                 <div class="portfolio-row">
-                    <span class="p-figi">${p.figi}</span>
+                    <span class="p-figi">${label}</span>
                     <span class="p-qty">${p.quantity} лот</span>
                     <span class="p-price">${p.avg_price.toFixed(2)} ₽</span>
                 </div>
-            `).join('');
+            `;
+        }).join('');
 
         el.innerHTML = `
             <div class="portfolio-balance">
                 💰 <b>${data.total.toLocaleString('ru')} ₽</b>
             </div>
-            ${rows || '<div class="muted" style="padding:8px">Только рубли</div>'}
+            ${rows || '<div class="muted" style="padding:8px">Позиций нет</div>'}
         `;
 
     } catch (e) {
         console.warn('portfolio error:', e);
     }
-}
-
-// ── Статус стратегии ──────────────────────────────────────
-function setStratStatus(msg) {
-    const el = document.getElementById('strat-status');
-    if (el) el.textContent = msg;
-    console.log('[Strategy]', msg);
 }

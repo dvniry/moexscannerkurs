@@ -92,6 +92,28 @@ def run_strategy(strategy: Strategy, df: pd.DataFrame) -> EngineResult:
         "winrate":       round(wins / total_trades * 100, 1) if total_trades else 0,
     }
 
+    profits = []
+    losses_list = []
+    entry_p = 0.0
+    for s in signals:
+        if s.action == 'BUY':
+            entry_p = s.price
+        elif s.action in ('SELL', 'STOP') and entry_p:
+            pct = (s.price - entry_p) / entry_p * 100
+            if pct > 0: profits.append(pct)
+            else:       losses_list.append(pct)
+
+    stats = {
+        "total_signals": len(signals),
+        "total_trades":  total_trades,
+        "wins":          wins,
+        "losses":        losses,
+        "winrate":       round(wins / total_trades * 100, 1) if total_trades else 0,
+        "avg_profit":    round(sum(profits) / len(profits), 2)    if profits      else 0,
+        "avg_loss":      round(sum(losses_list) / len(losses_list), 2) if losses_list else 0,
+    }
+
+
     return EngineResult(
         signals=signals,
         in_position=in_position,
