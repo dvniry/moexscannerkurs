@@ -16,6 +16,8 @@ from litestar.static_files import StaticFilesConfig
 from litestar.openapi import OpenAPIConfig
 from litestar.middleware.rate_limit import RateLimitConfig
 from litestar.stores.memory import MemoryStore
+from litestar.middleware.base import MiddlewareProtocol
+from litestar.types import ASGIApp, Receive, Scope, Send
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -43,6 +45,27 @@ async def index() -> bytes:
 async def health() -> dict:
     return {"status": "ok", "version": "0.8.0"}
 
+class SecurityHeadersMiddleware(MiddlewareProtocol):
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = dict(message.get("headers", []))
+                headers[b"x-content-type-options"] = b"nosniff"
+                headers[b"x-frame-options"]         = b"DENY"
+                headers[b"x-xss-protection"]        = b"1; mode=block"
+                headers[b"referrer-policy"]          = b"strict-origin-when-cross-origin"
+                headers[b"permissions-policy"]       = b"geolocation=(), microphone=()"
+                message = {**message, "headers": list(headers.items())}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 api_router = Router(
     path="/api",
@@ -67,7 +90,7 @@ rate_limit_config = RateLimitConfig(
 
 app = Litestar(
     route_handlers=[index, health, api_router, price_ws],
-    middleware=[rate_limit_config.middleware],
+    middleware=[SecurityHeadersMiddleware, rate_limit_config.middleware,],
     stores={"rate_limit": MemoryStore()},
     static_files_config=[
         StaticFilesConfig(
@@ -87,7 +110,6 @@ app = Litestar(
     ),
     debug=False,   # в продакшне False
 )
-
 
 if __name__ == "__main__":
     import uvicorn

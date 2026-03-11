@@ -1,9 +1,21 @@
-.env
-__pycache__
-venv
 карта шагов
 CHECKLIST.md
+# Environment
+.env
+.env.*
+!.env.example
+
+# Certificates
 *.cer
 *.crt
 *.pem
-russian_ca.cer
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Logs
+*.log
+logs/

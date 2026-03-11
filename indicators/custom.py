@@ -11,9 +11,9 @@ from typing import Any, Dict, Optional, Union
 from .base import Indicator
 from .library import SMA, EMA, RSI, MACD, BollingerBands, ATR, Stochastic
 from .bar import Bar, BarSeries
-import logging
+from api.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ─── Безопасный namespace для строкового стиля ─────────────

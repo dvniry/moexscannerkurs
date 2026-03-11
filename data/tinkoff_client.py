@@ -1,7 +1,7 @@
 """Клиент для работы с T-Bank Invest API."""
 from __future__ import annotations
 
-import logging
+from api.logger import get_logger
 from datetime import timedelta
 from functools import lru_cache
 from typing import Dict, Optional
@@ -11,7 +11,7 @@ import pandas as pd
 from t_tech.invest import Client, CandleInterval, InstrumentIdType
 from t_tech.invest.utils import now
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ── Константы ─────────────────────────────────────────────
 TARGET   = "invest-public-api.tbank.ru:443"   # актуальный домен
