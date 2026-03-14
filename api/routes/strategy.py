@@ -1,5 +1,5 @@
 """Strategy API — генерация сигналов + sandbox ордера."""
-import os, sys, asyncio, uuid
+import os, sys, uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -8,7 +8,7 @@ from litestar.exceptions import HTTPException
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from api.routes.candles    import get_client, _executor
+from api.routes._common    import MAX_DAYS, fetch_df, run_in_thread
 from api.routes.validation import (
     validate_ticker, validate_formula, validate_days,
     validate_lots, validate_direction, validate_name,
@@ -16,10 +16,7 @@ from api.routes.validation import (
 )
 from strategy.base   import FormulaStrategy
 from strategy.engine import run_strategy
-
-MAX_DAYS = {
-    "1m": 1, "5m": 3, "15m": 7, "1h": 30, "1d": 365,
-}
+from strategy.orders import SandboxOrders
 
 
 # ── Датаклассы ────────────────────────────────────────────
@@ -77,26 +74,21 @@ class OrderResponse:
 # ── Логика ────────────────────────────────────────────────
 
 def _run_strategy_sync(req: StrategyRequest):
-    ticker = validate_ticker(req.ticker)
-    entry  = validate_formula(req.entry_formula, 'entry_formula')
-    exit_  = validate_formula(req.exit_formula,  'exit_formula')
-    stop   = validate_formula(req.stop_formula,  'stop_formula')
-    days   = validate_days(req.days)
-    name   = validate_name(req.name)
+    ticker   = validate_ticker(req.ticker)
+    entry    = validate_formula(req.entry_formula, 'entry_formula')
+    exit_    = validate_formula(req.exit_formula,  'exit_formula')
+    stop     = validate_formula(req.stop_formula,  'stop_formula')
+    days     = validate_days(req.days) or MAX_DAYS.get(req.interval, 30)
+    name     = validate_name(req.name)
     interval = validate_interval(req.interval)
     size     = validate_size(req.size)
-    client   = get_client()
-    figi     = client.find_figi(ticker)
-    df       = client.get_candles(figi=figi, interval=req.interval, days_back=days)
+
+    _, df = fetch_df(ticker, interval, days)
 
     strategy = FormulaStrategy(
-        name          = name,
-        entry_formula = entry,
-        exit_formula  = exit_,
-        stop_formula  = stop,
-        size          = req.size,
-        interval      = req.interval,
-        params        = req.params,
+        name=name, entry_formula=entry, exit_formula=exit_,
+        stop_formula=stop, size=size, interval=interval,
+        params=req.params,
     )
     return run_strategy(strategy, df)
 
@@ -106,31 +98,24 @@ def _run_strategy_sync(req: StrategyRequest):
 @post("/strategy/run")
 async def run_strategy_endpoint(data: StrategyRequest) -> StrategyResponse:
     try:
-        loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _executor, lambda: _run_strategy_sync(data)
-        )
+        result = await run_in_thread(lambda: _run_strategy_sync(data))
     except (SyntaxError, ValueError, RuntimeError) as e:
         return StrategyResponse(
             name=data.name, ticker=data.ticker,
             signals=[], in_position=False,
-            stats={}, error=str(e)
+            stats={}, error=str(e),
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    signals = [
-        SignalPoint(
-            time=s.time, price=s.price,
-            action=s.action, size=s.size, reason=s.reason
-        )
-        for s in result.signals
-    ]
 
     return StrategyResponse(
         name        = data.name,
         ticker      = data.ticker.upper(),
-        signals     = signals,
+        signals     = [
+            SignalPoint(
+                time=s.time, price=s.price,
+                action=s.action, size=s.size, reason=s.reason,
+            )
+            for s in result.signals
+        ],
         in_position = result.in_position,
         stats       = result.stats,
         error       = None,
@@ -144,47 +129,19 @@ async def post_order(data: OrderRequest) -> OrderResponse:
     if not data.figi:
         raise HTTPException(status_code=422, detail="figi обязателен.")
 
-    try:
-        from strategy.orders import SandboxOrders
-        orders   = SandboxOrders()
-        order_id = str(uuid.uuid4())
-        loop     = asyncio.get_event_loop()
-        resp     = await loop.run_in_executor(
-            _executor,
-            lambda: orders.post_order(
-                figi      = data.figi,
-                direction = data.direction,
-                lots      = data.lots,
-                price     = data.price,
-                order_id  = order_id,
-            )
-        )
-        return OrderResponse(**resp)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    order_id = str(uuid.uuid4())
+    resp = await run_in_thread(lambda: SandboxOrders().post_order(
+        figi=data.figi, direction=data.direction,
+        lots=data.lots, price=data.price, order_id=order_id,
+    ))
+    return OrderResponse(**resp)
 
 
 @get("/strategy/sandbox/topup")
 async def sandbox_topup() -> dict:
-    try:
-        from strategy.orders import SandboxOrders
-        loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _executor, lambda: SandboxOrders().top_up(1_000_000)
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await run_in_thread(lambda: SandboxOrders().top_up(1_000_000))
 
 
 @get("/strategy/sandbox/portfolio")
 async def sandbox_portfolio() -> dict:
-    try:
-        from strategy.orders import SandboxOrders
-        loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _executor, lambda: SandboxOrders().get_portfolio()
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await run_in_thread(lambda: SandboxOrders().get_portfolio())

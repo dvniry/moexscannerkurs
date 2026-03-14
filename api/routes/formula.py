@@ -1,10 +1,7 @@
 """POST /api/formula — расчёт пользовательской формулы."""
-import os
-import sys
-import asyncio
+import os, sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 from litestar import post
@@ -12,17 +9,12 @@ from litestar.exceptions import HTTPException
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from indicators.formula import Formula
-from api.routes.candles import get_client, _to_unix, _executor
+from indicators.formula    import Formula
+from api.routes._common    import MAX_DAYS, run_in_thread
+from api.routes.candles    import get_client, _to_unix
 
-# ← добавили локально, не импортируем из candles
-MAX_DAYS = {
-    "1m":  1,
-    "5m":  3,
-    "15m": 7,
-    "1h":  30,
-    "1d":  365,
-}
+
+# ── Датаклассы ────────────────────────────────────────────
 
 @dataclass
 class FormulaRequest:
@@ -30,13 +22,15 @@ class FormulaRequest:
     formula:  str
     name:     str            = "Custom"
     interval: str            = "1h"
-    days:     Optional[int]  = None      # None → берём из MAX_DAYS
+    days:     Optional[int]  = None
     params:   Dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class FormulaPoint:
     time:  int
     value: float
+
 
 @dataclass
 class FormulaResponse:
@@ -46,40 +40,32 @@ class FormulaResponse:
     error:  Optional[str] = None
 
 
-def _fetch_and_calculate(req: FormulaRequest) -> tuple:
-    """Синхронно: загружаем данные + считаем формулу."""
-    client   = get_client()
-    figi     = client.find_figi(req.ticker.upper())
-    days     = req.days or MAX_DAYS.get(req.interval, 7)  # ← фикс
-    df       = client.get_candles(figi=figi, interval=req.interval, days_back=days)
+# ── Логика ────────────────────────────────────────────────
 
-    ind      = Formula(name=req.name, formula=req.formula, params=req.params)
-    result   = ind(df)
+def _fetch_and_calculate(req: FormulaRequest) -> tuple:
+    client = get_client()
+    figi   = client.find_figi(req.ticker.upper())
+    days   = req.days or MAX_DAYS.get(req.interval, 7)
+    df     = client.get_candles(figi=figi, interval=req.interval, days_back=days)
+    result = Formula(name=req.name, formula=req.formula, params=req.params)(df)
     return df, result
 
 
+# ── Endpoint ──────────────────────────────────────────────
+
 @post("/formula")
 async def calculate_formula(data: FormulaRequest) -> FormulaResponse:
-    """Рассчитать формулу и вернуть точки для графика."""
     try:
-        loop       = asyncio.get_event_loop()
-        df, result = await loop.run_in_executor(
-            _executor,
-            lambda: _fetch_and_calculate(data)
-        )
+        df, result = await run_in_thread(lambda: _fetch_and_calculate(data))
     except (SyntaxError, ValueError, RuntimeError) as e:
         return FormulaResponse(name=data.name, points=[], last=0.0, error=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
-    unix = _to_unix(df)
-
-    points = [
+    unix     = _to_unix(df)
+    points   = [
         FormulaPoint(time=t, value=round(float(v), 6))
         for t, v in zip(unix, result)
         if pd.notna(v)
     ]
-
     last_val = float(result.dropna().iloc[-1]) if not result.dropna().empty else 0.0
 
     return FormulaResponse(

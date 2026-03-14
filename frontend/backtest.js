@@ -261,5 +261,4 @@ function renderEquityChart(equityCurve, initial) {
 function setBtStatus(msg) {
     const el = document.getElementById('bt-status');
     if (el) el.textContent = msg;
-    console.log('[Backtest]', msg);
 }

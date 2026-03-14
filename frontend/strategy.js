@@ -41,7 +41,6 @@ const STRATEGY_TEMPLATES = {
 function setStratStatus(msg) {
     const el = document.getElementById('strat-status');
     if (el) el.textContent = msg;
-    console.log('[Strategy]', msg);
 }
 
 // ── Применить шаблон ──────────────────────────────────────

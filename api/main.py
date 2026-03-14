@@ -18,9 +18,11 @@ from litestar.middleware.rate_limit import RateLimitConfig
 from litestar.stores.memory import MemoryStore
 from litestar.middleware.base import MiddlewareProtocol
 from litestar.types import ASGIApp, Receive, Scope, Send
+from litestar.exceptions import HTTPException
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from api.exception_handlers import http_exception_handler, internal_exception_handler
 from api.routes.candles  import get_candles
 from api.routes.formula  import calculate_formula
 from api.routes.ws       import price_ws
@@ -92,6 +94,10 @@ app = Litestar(
     route_handlers=[index, health, api_router, price_ws],
     middleware=[SecurityHeadersMiddleware, rate_limit_config.middleware,],
     stores={"rate_limit": MemoryStore()},
+        exception_handlers={
+        HTTPException: http_exception_handler,
+        Exception:     internal_exception_handler,
+    },
     static_files_config=[
         StaticFilesConfig(
             directories=[FRONTEND_DIR],

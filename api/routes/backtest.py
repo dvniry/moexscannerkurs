@@ -1,5 +1,5 @@
 """POST /api/backtest — бэктест стратегии."""
-import os, sys, asyncio
+import os, sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -8,17 +8,13 @@ from litestar.exceptions import HTTPException
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from api.routes.candles    import get_client, _executor
+from api.routes._common    import MAX_DAYS, fetch_df, run_in_thread
 from api.routes.validation import (
     validate_ticker, validate_formula, validate_days,
-    validate_capital, validate_name,validate_interval, validate_size,
+    validate_capital, validate_name, validate_interval, validate_size,
 )
 from strategy.base     import FormulaStrategy
 from strategy.backtest import run_backtest
-
-MAX_DAYS = {
-    "1m": 1, "5m": 3, "15m": 7, "1h": 30, "1d": 365,
-}
 
 
 # ── Датаклассы ────────────────────────────────────────────
@@ -81,30 +77,22 @@ class BacktestResponse:
 # ── Логика ────────────────────────────────────────────────
 
 def _run_bt(req: BacktestRequest):
-    ticker  = validate_ticker(req.ticker)
-    entry   = validate_formula(req.entry_formula, 'entry_formula')
-    exit_   = validate_formula(req.exit_formula,  'exit_formula')
-    stop    = validate_formula(req.stop_formula,  'stop_formula')
-    days = validate_days(req.days) or MAX_DAYS.get(req.interval, 365)
-    capital = validate_capital(req.capital)
-    name    = validate_name(req.name)
+    ticker   = validate_ticker(req.ticker)
+    entry    = validate_formula(req.entry_formula, 'entry_formula')
+    exit_    = validate_formula(req.exit_formula,  'exit_formula')
+    stop     = validate_formula(req.stop_formula,  'stop_formula')
+    days     = validate_days(req.days) or MAX_DAYS.get(req.interval, 365)
+    capital  = validate_capital(req.capital)
+    name     = validate_name(req.name)
     interval = validate_interval(req.interval)
-    size     = validate_size(req.size) 
-    client   = get_client()
-    figi     = client.find_figi(ticker)
-    df       = client.get_candles(figi=figi, interval=req.interval, days_back=days)
+    size     = validate_size(req.size)
 
-    if df is None or df.empty:          # ← добавить
-        raise ValueError(f"Нет данных для {ticker} / {req.interval}")
+    _, df = fetch_df(ticker, interval, days)
 
     strategy = FormulaStrategy(
-        name          = name,
-        entry_formula = entry,
-        exit_formula  = exit_,
-        stop_formula  = stop,
-        size          = req.size,
-        interval      = req.interval,
-        params        = req.params,
+        name=name, entry_formula=entry, exit_formula=exit_,
+        stop_formula=stop, size=size, interval=interval,
+        params=req.params,
     )
     return run_backtest(strategy, df, initial_capital=capital)
 
@@ -114,8 +102,7 @@ def _run_bt(req: BacktestRequest):
 @post("/backtest")
 async def run_backtest_endpoint(data: BacktestRequest) -> BacktestResponse:
     try:
-        loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(_executor, lambda: _run_bt(data))
+        result = await run_in_thread(lambda: _run_bt(data))
     except (SyntaxError, ValueError, RuntimeError) as e:
         return BacktestResponse(
             ticker=data.ticker, name=data.name,
@@ -124,10 +111,8 @@ async def run_backtest_endpoint(data: BacktestRequest) -> BacktestResponse:
             total_return=0, max_drawdown=0, sharpe=0,
             winrate=0, total_trades=0, wins=0, losses=0,
             avg_profit=0, avg_loss=0, best_trade=0,
-            worst_trade=0, commission=0, error=str(e)
+            worst_trade=0, commission=0, error=str(e),
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
     return BacktestResponse(
         ticker       = data.ticker.upper(),
