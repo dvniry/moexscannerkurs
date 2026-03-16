@@ -2,27 +2,24 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report
 from ml.config import CFG, SCALES
 from torchvision import models
 
+
 class MultiScaleCNN(nn.Module):
     def __init__(self, ctx_dim: int = 0, n_scales: int = len(SCALES)):
         super().__init__()
-
-        # EfficientNet-B0 из torchvision — качается с dl.fbaipublicfiles.com
         _net = models.efficientnet_b0(
             weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1
         )
-        # Убираем голову, оставляем backbone + avgpool
         self.backbone = nn.Sequential(
-            _net.features,   # свёрточная часть
-            _net.avgpool,    # global avg pool → (B, 1280, 1, 1)
-            nn.Flatten(),    # → (B, 1280)
+            _net.features,
+            _net.avgpool,
+            nn.Flatten(),
         )
-        feat_dim = 1280
-
+        feat_dim  = 1280
         self.scale_proj = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(feat_dim, 128),
@@ -30,23 +27,24 @@ class MultiScaleCNN(nn.Module):
                 nn.Dropout(0.4),
             ) for _ in SCALES
         ])
-
         fused_dim = 128 * n_scales + ctx_dim
         self.head = nn.Sequential(
             nn.LayerNorm(fused_dim),
             nn.Linear(fused_dim, 256),
             nn.SiLU(),
-            nn.Dropout(0.4),
-            nn.Linear(256, 3),
+            nn.Dropout(0.5),          # было 0.4
+            nn.Linear(256, 128),      # добавить промежуточный слой
+            nn.SiLU(),  
+            nn.Dropout(0.5),
+            nn.Linear(128, 3),
         )
 
     def forward(self, imgs_by_scale: dict, ctx: torch.Tensor = None):
         feats = []
         for i, W in enumerate(SCALES):
-            x = imgs_by_scale[W]   # уже (B, 3, 224, 224) CHW — нормализация в render
-            e = self.backbone(x)
-            feats.append(self.scale_proj[i](e))
-
+            x = imgs_by_scale[W]                    # (B, 3, 224, 224)
+            e = self.backbone(x)                     # (B, 1280)
+            feats.append(self.scale_proj[i](e))      # (B, 128)  ← был typo
         fused = torch.cat(feats, dim=1)
         if ctx is not None:
             fused = torch.cat([fused, ctx], dim=1)
@@ -64,59 +62,58 @@ def get_device():
     return d
 
 
-def _make_loader(imgs_s, y, ctx, batch_size, shuffle):
-    tensors = [torch.tensor(imgs_s[W]).float() for W in SCALES]
-    tensors.append(torch.tensor(y).long())
-    if ctx is not None:
-        tensors.append(torch.tensor(ctx).float())
-    return DataLoader(TensorDataset(*tensors),
-                      batch_size=batch_size, shuffle=shuffle,
-                      num_workers=0, pin_memory=True)
+def _collate(batch):
+    """Собрать список (imgs_dict, y, ctx) → батч."""
+    imgs_list, y_list, ctx_list = zip(*batch)
+    imgs_batch = {W: torch.stack([x[W] for x in imgs_list]) for W in SCALES}
+    return imgs_batch, torch.tensor(y_list, dtype=torch.long), torch.stack(ctx_list)
 
 
-def _unpack(batch, ctx_dim, device):
-    if ctx_dim > 0:
-        *img_tensors, y, ctx = batch
-        ctx = ctx.to(device)
-    else:
-        *img_tensors, y = batch
-        ctx = None
-    imgs = {W: img_tensors[i].to(device) for i, W in enumerate(SCALES)}
-    return imgs, y.to(device), ctx
+def _make_loader(ds, batch_size: int, shuffle: bool) -> DataLoader:
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                      num_workers=0, pin_memory=True, collate_fn=_collate)
 
 
-def train_multiscale(tr_s, y_tr, val_s, y_val, tr_ctx, val_ctx, ctx_dim,
+def _step(model, batch, device, ctx_dim):
+    imgs_dict, y, ctx = batch
+    imgs = {W: imgs_dict[W].to(device) for W in SCALES}
+    y    = y.to(device)
+    ctx  = ctx.to(device) if ctx_dim > 0 else None
+    return model(imgs, ctx), y
+
+
+def train_multiscale(tr_ds, y_tr, val_ds, y_val, ctx_dim,
                      save_path='ml/model_multiscale.pt'):
     device = get_device()
     model  = MultiScaleCNN(ctx_dim=ctx_dim).to(device)
 
-    counts  = np.bincount(y_tr)
-    weights = torch.tensor(counts.sum() / (3 * counts), dtype=torch.float).to(device)
+    counts   = np.bincount(y_tr)
+    weights  = torch.tensor(counts.sum() / (3 * counts), dtype=torch.float).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.1)
 
-    tr_loader  = _make_loader(tr_s,  y_tr,  tr_ctx,  CFG.batch_size, True)
-    val_loader = _make_loader(val_s, y_val, val_ctx, CFG.batch_size, False)
+    tr_loader  = _make_loader(tr_ds,  CFG.batch_size, True)
+    val_loader = _make_loader(val_ds, CFG.batch_size, False)
 
-    # Фаза 1: заморозить только features (backbone[0]), не avgpool/flatten
     print("\n  ── Фаза 1: Pretrain (backbone заморожен) ──")
-    for p in model.backbone[0].parameters():   # только features
+    for p in model.backbone[0].parameters():
         p.requires_grad = False
 
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=1e-3, weight_decay=1e-4,
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20)
-
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=10, T_mult=2   # рестарт каждые 10 эпох, потом 20
+    )
     best_acc, patience = 0.0, 0
 
     for epoch in range(1, 31):
         model.train()
         total_loss = 0.0
         for batch in tr_loader:
-            imgs, y, ctx = _unpack(batch, ctx_dim, device)
+            logits, y = _step(model, batch, device, ctx_dim)
             optimizer.zero_grad()
-            loss = criterion(model(imgs, ctx), y)
+            loss = criterion(logits, y)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -127,8 +124,8 @@ def train_multiscale(tr_s, y_tr, val_s, y_val, tr_ctx, val_ctx, ctx_dim,
         correct = 0
         with torch.no_grad():
             for batch in val_loader:
-                imgs, y, ctx = _unpack(batch, ctx_dim, device)
-                correct += (model(imgs, ctx).argmax(1) == y).sum().item()
+                logits, y = _step(model, batch, device, ctx_dim)
+                correct += (logits.argmax(1) == y).sum().item()
         val_acc = correct / len(y_val)
         print(f"  Epoch {epoch:3d}/30 | loss={total_loss/len(tr_loader):.4f} | val_acc={val_acc:.4f}")
 
@@ -147,42 +144,36 @@ def train_multiscale(tr_s, y_tr, val_s, y_val, tr_ctx, val_ctx, ctx_dim,
     return model
 
 
-def finetune_multiscale(model, tr_s, y_tr, val_s, y_val, tr_ctx, val_ctx,
+def finetune_multiscale(model, tr_ds, y_tr, val_ds, y_val, ctx_dim,
                         save_path='ml/model_multiscale.pt'):
-    device   = next(model.parameters()).device
-    # ctx_dim из реальных данных, не из модели
-    _ctx_dim = tr_ctx.shape[1] if tr_ctx is not None else 0
-
-    counts  = np.bincount(y_tr)
-    weights = torch.tensor(counts.sum() / (3 * counts), dtype=torch.float).to(device)
+    device    = next(model.parameters()).device
+    counts    = np.bincount(y_tr)
+    weights   = torch.tensor(counts.sum() / (3 * counts), dtype=torch.float).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.1)
 
-    # Фаза 2: разморозить последние 3 блока features (6, 7, 8)
-    # torchvision EfficientNet-B0: features = Sequential[0..8]
-    print("\n  ── Фаза 2: Fine-tune (features[6,7,8] + head) ──")
+    print("\n  ── Фаза 2: Fine-tune (features[8] only + head) ──")
     for name, p in model.backbone[0].named_parameters():
-        block_idx = name.split('.')[0]   # '0', '1', ... '8'
-        if block_idx in ('6', '7', '8'):
+        if name.split('.')[0] == '8':
             p.requires_grad = True
 
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=3e-5, weight_decay=1e-3,
+        lr=1e-4,            # было 3e-5 — чуть выше, меньше слоёв
+        weight_decay=5e-3,  # было 1e-3 — сильнее L2
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=25)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=15)
 
-    tr_loader  = _make_loader(tr_s,  y_tr,  tr_ctx,  CFG.batch_size, True)
-    val_loader = _make_loader(val_s, y_val, val_ctx, CFG.batch_size, False)
-
+    tr_loader  = _make_loader(tr_ds,  CFG.batch_size, True)
+    val_loader = _make_loader(val_ds, CFG.batch_size, False)
     best_acc, patience = 0.0, 0
 
     for epoch in range(1, 26):
         model.train()
         total_loss = 0.0
         for batch in tr_loader:
-            imgs, y, ctx = _unpack(batch, _ctx_dim, device)
+            logits, y = _step(model, batch, device, ctx_dim)
             optimizer.zero_grad()
-            loss = criterion(model(imgs, ctx), y)
+            loss = criterion(logits, y)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -193,8 +184,8 @@ def finetune_multiscale(model, tr_s, y_tr, val_s, y_val, tr_ctx, val_ctx,
         correct = 0
         with torch.no_grad():
             for batch in val_loader:
-                imgs, y, ctx = _unpack(batch, _ctx_dim, device)
-                correct += (model(imgs, ctx).argmax(1) == y).sum().item()
+                logits, y = _step(model, batch, device, ctx_dim)
+                correct += (logits.argmax(1) == y).sum().item()
         val_acc = correct / len(y_val)
         print(f"  Fine-tune {epoch:2d}/25 | loss={total_loss/len(tr_loader):.4f} | val_acc={val_acc:.4f}")
 
@@ -205,7 +196,7 @@ def finetune_multiscale(model, tr_s, y_tr, val_s, y_val, tr_ctx, val_ctx,
             patience = 0
         else:
             patience += 1
-            if patience >= 8:
+            if patience >= 5:
                 print("  ⏹ Ранняя остановка")
                 break
 
@@ -213,15 +204,15 @@ def finetune_multiscale(model, tr_s, y_tr, val_s, y_val, tr_ctx, val_ctx,
     model.load_state_dict(torch.load(save_path, map_location=device, weights_only=True))
     return model
 
-def evaluate_multiscale(model, te_s, y_test, te_ctx):
-    _ctx_dim = te_ctx.shape[1] if te_ctx is not None else 0
-    device   = next(model.parameters()).device
-    loader   = _make_loader(te_s, y_test, te_ctx, 128, False)
+
+def evaluate_multiscale(model, te_ds, y_test, ctx_dim):
+    device = next(model.parameters()).device
+    loader = _make_loader(te_ds, 64, False)
     model.eval()
     preds = []
     with torch.no_grad():
         for batch in loader:
-            imgs, y, ctx = _unpack(batch, _ctx_dim, device)
-            preds.extend(model(imgs, ctx).argmax(1).cpu().numpy())
+            logits, _ = _step(model, batch, device, ctx_dim)
+            preds.extend(logits.argmax(1).cpu().numpy())
     print(classification_report(y_test, preds,
                                  target_names=['BUY', 'HOLD', 'SELL'], digits=4))

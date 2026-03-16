@@ -1,6 +1,8 @@
 карта шагов
 CHECKLIST.md
 .vscode
+dataset_poster.png
+visualize_dataset.py
 cache/
 # Environment
 .env

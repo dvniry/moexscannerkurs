@@ -1,6 +1,8 @@
 """Мультимасштабный датасет с рыночным и отраслевым контекстом."""
-import sys, os, hashlib
+import os
+os.environ['GRPC_DNS_RESOLVER'] = 'native'
 
+import sys, hashlib
 _cert = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'russian_ca.cer'))
 if os.path.exists(_cert):
     os.environ['GRPC_DEFAULT_SSL_ROOTS_FILE_PATH'] = _cert
@@ -8,6 +10,7 @@ if os.path.exists(_cert):
 import numpy as np
 import pandas as pd
 from typing import Dict, Tuple, Optional
+import torch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -15,9 +18,46 @@ from ml.config         import CFG, SCALES
 from ml.candle_render  import render_candles
 from ml.dataset        import add_indicators, label_candles, load_imoex
 from ml.context_loader import load_context_series, build_context_features
+from torch.utils.data import Dataset as TorchDataset
 
 def _cache_path(ticker: str, W: int) -> str:
     return f"ml/cache/imgs_{ticker}_{W}.npy"
+
+
+class LazyMultiScaleDataset(TorchDataset):
+    """Читает изображения из .npy кэша по одному тикеру, не грузя всё в RAM."""
+
+    def __init__(self, records: list, ctx_dim: int):
+        # records = [(ticker, local_idx), ...]
+        self.records  = records
+        self.ctx_dim  = ctx_dim
+        self._cache   = {}   # ticker → {W: memmap, 'y': arr, 'ctx': arr}
+
+    def _load(self, ticker: str):
+        if ticker in self._cache:
+            return self._cache[ticker]
+        data = {
+            W: np.load(_cache_path(ticker, W), mmap_mode='r') for W in SCALES
+        }
+        data['y']   = np.load(f"ml/cache/labels_{ticker}.npy",  mmap_mode='r')
+        data['ctx'] = np.load(f"ml/cache/ctx_{ticker}.npy",     mmap_mode='r') \
+                      if os.path.exists(f"ml/cache/ctx_{ticker}.npy") else None
+        self._cache[ticker] = data
+        return data
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, idx):
+        ticker, local_idx = self.records[idx]
+        data = self._load(ticker)
+        imgs = {W: torch.tensor(data[W][local_idx]).float() for W in SCALES}
+        y    = int(data['y'][local_idx])
+        ctx  = torch.tensor(data['ctx'][local_idx]).float() \
+               if data['ctx'] is not None \
+               else torch.zeros(self.ctx_dim)
+        return imgs, y, ctx
+
 
 def build_multiscale_dataset(
     df, imoex=None, context=None,
@@ -75,68 +115,51 @@ def build_multiscale_dataset(
 
 
 def build_full_multiscale_dataset():
-    """Собрать полный датасет по всем тикерам с контекстом."""
     from api.routes.candles import get_client
     client = get_client()
 
     print("  Загружаем IMOEX...")
     imoex = load_imoex()
 
-    all_scales  = {W: [] for W in SCALES}
-    all_y       = []
-    all_ctx     = []
-    ctx_dim     = None
+    records  = []   # (ticker, local_idx)
+    all_y    = []
+    ctx_dim  = None
 
     for ticker in CFG.tickers:
         print(f"  Загружаем {ticker}...")
         try:
             figi = client.find_figi(ticker)
             if not figi:
-                print(f"  {ticker}: не найден")
                 continue
-
             df = client.get_candles(figi=figi, interval=CFG.interval,
                                     days_back=CFG.days_back)
             if df is None or df.empty:
                 continue
 
-            # Загрузить отраслевой контекст
             print(f"    Контекст для {ticker}...")
             ctx_series = load_context_series(ticker)
-
-            # Передаём ticker чтобы context_loader знал ожидаемую размерность
-            ctx_feats = build_context_features(
+            ctx_feats  = build_context_features(
                 ctx_series, df.index, ticker=ticker
             ) if ctx_series is not None else None
 
-            imgs, y, ctx = build_multiscale_dataset(df, imoex, ctx_feats, ticker=ticker)
-
+            imgs, y, ctx = build_multiscale_dataset(
+                df, imoex, ctx_feats, ticker=ticker
+            )
             if len(y) == 0:
                 continue
 
-            for W in SCALES:
-                all_scales[W].append(imgs[W])
-            all_y.append(y)
-
+            # Сохранить ctx в кэш
+            ctx_path = f"ml/cache/ctx_{ticker}.npy"
             if ctx is not None:
-                # Определяем эталонный ctx_dim по первому успешному тикеру
+                np.save(ctx_path, ctx)
                 if ctx_dim is None:
                     ctx_dim = ctx.shape[1]
-
-                # Выравниваем размерность: паддинг или обрезка
-                if ctx.shape[1] < ctx_dim:
-                    pad = np.zeros((ctx.shape[0], ctx_dim - ctx.shape[1]),
-                                   dtype=np.float32)
-                    ctx = np.concatenate([ctx, pad], axis=1)
-                elif ctx.shape[1] > ctx_dim:
-                    ctx = ctx[:, :ctx_dim]
-
-                all_ctx.append(ctx)
             elif ctx_dim is not None:
-                # ctx не получен, но другие тикеры имеют контекст → нули
-                all_ctx.append(
-                    np.zeros((len(y), ctx_dim), dtype=np.float32)
-                )
+                np.save(ctx_path, np.zeros((len(y), ctx_dim), dtype=np.float32))
+
+            for local_idx in range(len(y)):
+                records.append((ticker, local_idx))
+            all_y.append(y)
 
             print(f"  {ticker}: {len(y)} сэмплов")
 
@@ -144,13 +167,14 @@ def build_full_multiscale_dataset():
             print(f"  {ticker}: ошибка — {e}")
             import traceback; traceback.print_exc()
 
-    if not all_y:
+    if not records:
         raise RuntimeError("Не удалось загрузить данные.")
 
-    imgs_out = {W: np.concatenate(all_scales[W]) for W in SCALES}
-    y_out    = np.concatenate(all_y)
-    ctx_out  = np.concatenate(all_ctx) if all_ctx else None
+    ctx_dim = ctx_dim or 0
+    y_all   = np.concatenate(all_y)
+    dataset = LazyMultiScaleDataset(records, ctx_dim)
 
-    return imgs_out, y_out, ctx_out, ctx_dim
+    return dataset, y_all, ctx_dim
+
 
 

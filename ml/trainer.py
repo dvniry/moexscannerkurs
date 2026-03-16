@@ -7,6 +7,7 @@ from ml.dataset import build_full_dataset, class_distribution
 
 
 
+
 def run_mlp_training():
     print("=" * 50 + "\nMLP Baseline\n" + "=" * 50)
     X_flat, X_img, y = build_full_dataset()
@@ -36,46 +37,33 @@ def run_mlp_training():
 def run_multiscale_training():
     print("=" * 50 + "\nMultiScale CNN + Context + TL\n" + "=" * 50)
 
-    from ml.dataset_v2     import build_full_multiscale_dataset
+    from ml.dataset_v2     import build_full_multiscale_dataset, LazyMultiScaleDataset
     from ml.multiscale_cnn import train_multiscale, finetune_multiscale, evaluate_multiscale
 
-    imgs_by_scale, y, ctx, ctx_dim = build_full_multiscale_dataset()
-    print(f"\nВсего сэмплов: {len(y)}")
-    print(f"Контекст: {ctx.shape if ctx is not None else 'нет'}")
-    class_distribution(y)
+    dataset, y_all, ctx_dim = build_full_multiscale_dataset()
 
-    idx = np.arange(len(y))
+    print(f"\nВсего сэмплов: {len(y_all)}")
+    print(f"Контекст: dim={ctx_dim}")
+    class_distribution(y_all)
+
+    idx = np.arange(len(y_all))
     idx_tr, idx_tmp, y_tr, y_tmp = train_test_split(
-        idx, y, test_size=0.3, random_state=CFG.seed, stratify=y)
+        idx, y_all, test_size=0.3, random_state=CFG.seed, stratify=y_all)
     idx_val, idx_test, y_val, y_test = train_test_split(
         idx_tmp, y_tmp, test_size=0.5, random_state=CFG.seed, stratify=y_tmp)
 
-    tr_s  = {W: imgs_by_scale[W][idx_tr]   for W in SCALES}
-    val_s = {W: imgs_by_scale[W][idx_val]  for W in SCALES}
-    te_s  = {W: imgs_by_scale[W][idx_test] for W in SCALES}
-    tr_ctx  = ctx[idx_tr]   if ctx is not None else None
-    val_ctx = ctx[idx_val]  if ctx is not None else None
-    te_ctx  = ctx[idx_test] if ctx is not None else None
+    from torch.utils.data import Subset
+    tr_ds  = Subset(dataset, idx_tr)
+    val_ds = Subset(dataset, idx_val)
+    te_ds  = Subset(dataset, idx_test)
 
     print(f"  Train: {len(y_tr)} | Val: {len(y_val)} | Test: {len(y_test)}")
 
-    # Сохранить для ансамбля
-    np.save("ml/ctx_train.npy", tr_ctx  if tr_ctx  is not None else np.array([]))
-    np.save("ml/ctx_val.npy",   val_ctx if val_ctx is not None else np.array([]))
-    np.save("ml/ctx_test.npy",  te_ctx  if te_ctx  is not None else np.array([]))
-    for W in SCALES:
-        np.save(f"ml/imgs_{W}_train.npy", tr_s[W])
-        np.save(f"ml/imgs_{W}_test.npy",  te_s[W])
-    np.save("ml/y_ms_train.npy", y_tr)
-    np.save("ml/y_ms_test.npy",  y_test)
-
-    model = train_multiscale(tr_s, y_tr, val_s, y_val,
-                             tr_ctx, val_ctx, ctx_dim or 0)
-    model = finetune_multiscale(model, tr_s, y_tr, val_s, y_val,
-                                tr_ctx, val_ctx)
+    model = train_multiscale(tr_ds, y_tr, val_ds, y_val, ctx_dim)
+    model = finetune_multiscale(model, tr_ds, y_tr, val_ds, y_val, ctx_dim)
 
     print("\n" + "=" * 50 + "\nОценка MultiScale CNN\n" + "=" * 50)
-    evaluate_multiscale(model, te_s, y_test, te_ctx)
+    evaluate_multiscale(model, te_ds, y_test, ctx_dim)
 
 
 def run_ensemble():
