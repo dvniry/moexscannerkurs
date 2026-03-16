@@ -1,5 +1,11 @@
 """Клиент для работы с T-Bank Invest API."""
 from __future__ import annotations
+import os
+os.environ['GRPC_DNS_RESOLVER'] = 'native'
+_cert = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'russian_ca.cer'))
+if os.path.exists(_cert):
+    os.environ.setdefault('GRPC_DEFAULT_SSL_ROOTS_FILE_PATH', _cert)
+
 
 from api.logger import get_logger
 from datetime import timedelta
@@ -10,6 +16,8 @@ import pandas as pd
 
 from t_tech.invest import Client, CandleInterval, InstrumentIdType
 from t_tech.invest.utils import now
+
+
 
 logger = get_logger(__name__)
 
@@ -85,6 +93,31 @@ class TinkoffDataClient:
                 return ticker
         return None
 
+
+    # ── Индикативы (IMOEX, Brent и т.д.) ─────────────────────
+
+    def get_indicatives(self) -> list:
+        try:
+            from t_tech.invest import InstrumentsRequest
+            with Client(self.token, target=TARGET) as client:
+                return client.instruments.indicatives(
+                    request=InstrumentsRequest()
+                ).instruments
+        except Exception as e:
+            logger.error("Failed to get indicatives: %s", e)
+            return []
+
+    def find_indicative_uid(self, ticker: str) -> Optional[str]:
+        """Найти UID индикативного инструмента по тикеру (IMOEX, BRENT и т.д.)."""
+        ticker_upper = ticker.upper()
+        instruments  = self.get_indicatives()
+        for inst in instruments:
+            if inst.ticker.upper() == ticker_upper:
+                logger.info("Indicative found: %s → uid=%s", ticker, inst.uid)
+                return inst.uid
+        logger.warning("Indicative not found: %s", ticker_upper)
+        return None
+
     # ── Свечи ─────────────────────────────────────────────
 
     def get_candles(
@@ -135,6 +168,51 @@ class TinkoffDataClient:
         logger.info("Loaded %d candles: %s %s %dd", len(df), figi, interval, days_back)
         return df.copy()
 
+
+    def get_candles_by_uid(
+        self,
+        uid:       str,
+        interval:  str = "1d",
+        days_back: int = 730,
+    ) -> pd.DataFrame:
+        """Получить свечи по UID индикатива (IMOEX, Brent и т.д.)."""
+        if interval not in INTERVALS:
+            raise ValueError(f"Неизвестный интервал '{interval}'.")
+
+        cache_key = f"uid_{uid}_{interval}_{days_back}"
+        if cache_key in self._candle_cache:
+            return self._candle_cache[cache_key].copy()
+
+        try:
+            with Client(self.token, target=TARGET) as client:
+                candles = client.market_data.get_candles(
+                    instrument_id = uid,
+                    from_         = now() - timedelta(days=days_back),
+                    to            = now(),
+                    interval      = INTERVALS[interval],
+                ).candles
+        except Exception as e:
+            logger.error("Failed to get candles by uid %s: %s", uid, e)
+            raise
+
+        if not candles:
+            logger.warning("No candles for uid=%s", uid)
+            return pd.DataFrame()
+
+        df = pd.DataFrame({
+            "time":   [c.time for c in candles],
+            "open":   [self._q(c.open)   for c in candles],
+            "high":   [self._q(c.high)   for c in candles],
+            "low":    [self._q(c.low)    for c in candles],
+            "close":  [self._q(c.close)  for c in candles],
+            "volume": [c.volume          for c in candles],
+        }).set_index("time")
+
+        self._candle_cache[cache_key] = df
+        logger.info("Loaded %d candles by uid: %s %s %dd",
+                    len(df), uid, interval, days_back)
+        return df.copy()
+
     # ── Список инструментов ───────────────────────────────
 
     def get_all_tickers(self) -> pd.DataFrame:
@@ -169,6 +247,8 @@ class TinkoffDataClient:
         self._figi_cache.clear()
         self._figi_loaded = False
         logger.info("All caches cleared")
+
+    
 
     # ── Утилиты ───────────────────────────────────────────
 

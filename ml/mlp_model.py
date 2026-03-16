@@ -8,8 +8,13 @@ from ml.config import CFG
 
 
 class MLP(nn.Module):
-    def __init__(self, input_dim: int = 225, hidden: list = None, dropout: float = 0.3):
+    def __init__(self, input_dim: int = None, hidden: list = None, dropout: float = 0.3):
         super().__init__()
+        from ml.dataset import INDICATOR_COLS
+        from ml.config  import CFG
+        # Автоматически вычислить если не передан
+        if input_dim is None:
+            input_dim = len(INDICATOR_COLS) * CFG.window   # 24 * 15 = 360
         hidden = hidden or CFG.mlp_hidden
         layers, prev = [], input_dim
         for h in hidden:
@@ -21,6 +26,7 @@ class MLP(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+
 
 
 def make_sampler(y: np.ndarray) -> WeightedRandomSampler:
@@ -50,7 +56,9 @@ def train_mlp(X_train, y_train, X_val, y_val,
     model     = MLP().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=CFG.mlp_lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CFG.epochs_pre)
-    criterion = nn.CrossEntropyLoss()
+    counts  = torch.tensor([3386, 3292, 4156], dtype=torch.float)
+    weights = (counts.sum() / (3 * counts)).to(device)
+    criterion = nn.CrossEntropyLoss(weight=weights)
     best_val  = 0.0
 
     for epoch in range(1, CFG.epochs_pre + 1):
