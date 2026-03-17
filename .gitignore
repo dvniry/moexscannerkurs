@@ -4,6 +4,8 @@ CHECKLIST.md
 dataset_poster.png
 visualize_dataset.py
 cache/
+eval_results.json
+*.npy
 # Environment
 .env
 .env.*

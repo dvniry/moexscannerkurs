@@ -34,7 +34,47 @@ def run_mlp_training():
     print("  Данные сохранены.")
 
 
-def run_multiscale_training():
+def run_multiscale_training(deep: bool = False):
+    mode = "DEEP (BiLSTM)" if deep else "Standard"
+    print("=" * 50 + f"\nMultiScale CNN + Context + TL [{mode}]\n" + "=" * 50)
+
+    from ml.dataset_v2     import build_full_multiscale_dataset, LazyMultiScaleDataset
+    from ml.multiscale_cnn import (train_multiscale, finetune_multiscale,
+                                   train_multiscale_deep, evaluate_multiscale)
+
+    dataset, y_all, ctx_dim = build_full_multiscale_dataset()
+
+    print(f"\nВсего сэмплов: {len(y_all)}")
+    print(f"Контекст: dim={ctx_dim}")
+    class_distribution(y_all)
+
+    idx = np.arange(len(y_all))
+    idx_tr, idx_tmp, y_tr, y_tmp = train_test_split(
+        idx, y_all, test_size=0.3, random_state=CFG.seed, stratify=y_all)
+    idx_val, idx_test, y_val, y_test = train_test_split(
+        idx_tmp, y_tmp, test_size=0.5, random_state=CFG.seed, stratify=y_tmp)
+
+    from torch.utils.data import Subset
+    tr_ds  = Subset(dataset, idx_tr)
+    val_ds = Subset(dataset, idx_val)
+    te_ds  = Subset(dataset, idx_test)
+
+    print(f"  Train: {len(y_tr)} | Val: {len(y_val)} | Test: {len(y_test)}")
+
+    if deep:
+        save_path = 'ml/model_multiscale_deep.pt'
+        model = train_multiscale_deep(tr_ds, y_tr, val_ds, y_val, ctx_dim,
+                                      save_path=save_path)
+    else:
+        save_path = 'ml/model_multiscale.pt'
+        model = train_multiscale(tr_ds, y_tr, val_ds, y_val, ctx_dim,
+                                 save_path=save_path)
+        model = finetune_multiscale(model, tr_ds, y_tr, val_ds, y_val, ctx_dim,
+                                    save_path=save_path)
+
+    print("\n" + "=" * 50 + "\nОценка MultiScale CNN\n" + "=" * 50)
+    evaluate_multiscale(model, te_ds, y_test, ctx_dim,
+                        save_json=save_path.replace('.pt', '_eval.json'))
     print("=" * 50 + "\nMultiScale CNN + Context + TL\n" + "=" * 50)
 
     from ml.dataset_v2     import build_full_multiscale_dataset, LazyMultiScaleDataset
@@ -112,7 +152,10 @@ def run_ensemble():
 if __name__ == "__main__":
     if "--ensemble" in sys.argv:
         run_ensemble()
+    elif "--deep" in sys.argv:
+        run_multiscale_training(deep=True)
     elif "--multiscale" in sys.argv:
-        run_multiscale_training()
+        run_multiscale_training(deep=False)
     else:
         run_mlp_training()
+
