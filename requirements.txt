@@ -1,19 +1,26 @@
-# Данные (официальная библиотека Т-Банк)
-# Модуль: t_tech.invest
-# Установка: pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
+# ── Deep Learning ──────────────────────────────────────────
+torch==2.3.1
+torchvision==0.18.1
+
+# ── ML / Data Science ──────────────────────────────────────
+numpy>=1.26.0
+pandas>=2.1.0
+scikit-learn>=1.4.0
+hmmlearn>=0.3.2
+
+# ── Image Processing ───────────────────────────────────────
+Pillow>=10.2.0
+
+# ── API Framework ──────────────────────────────────────────
+litestar>=2.8.0
+uvicorn[standard]>=0.29.0
+
+# ── Tinkoff Invest API ─────────────────────────────────────
 t-tech-investments>=0.3.3
 
-# Обработка данных
-pandas>=2.1.0
-numpy>=1.25.0
+# ── gRPC (нужен для Tinkoff) ───────────────────────────────
+grpcio>=1.62.0
+grpcio-status>=1.62.0
+protobuf>=4.25.0
 
-# Графики (устанавливаем позже)
-lightweight-charts>=1.0.1
-plotly>=5.18.0
-
-# Технический анализ (устанавливаем позже)
-pandas-ta>=0.3.14b
-
-# Утилиты
-python-dotenv>=1.0.0
-pyyaml>=6.0.1
+# Установка: pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple

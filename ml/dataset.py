@@ -1,4 +1,4 @@
-"""MLP датасет — индикаторы + RS + календарь."""
+"""MLP датасет — индикаторы + RS + календарь + признаки Лиховидова."""
 import sys, os
 
 _cert = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'russian_ca.cer'))
@@ -13,8 +13,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from ml.config import CFG
 
 
-# ── Технические индикаторы ────────────────────────────────
-
 def add_indicators(df: pd.DataFrame,
                    imoex: pd.DataFrame = None) -> pd.DataFrame:
     c = df['close'].astype(float)
@@ -22,64 +20,90 @@ def add_indicators(df: pd.DataFrame,
     l = df['low'].astype(float)
     v = df['volume'].astype(float)
 
-    # Трендовые
+    # ── Трендовые MA (периоды Фибоначчи: 8≈9, 21, 55≈50) ────────
     df['ema9']     = c.ewm(span=9).mean()
     df['ema21']    = c.ewm(span=21).mean()
     df['ema50']    = c.ewm(span=50).mean()
     df['macd']     = c.ewm(span=12).mean() - c.ewm(span=26).mean()
     df['macd_sig'] = df['macd'].ewm(span=9).mean()
 
-    # RSI
-    delta          = c.diff()
-    gain           = delta.clip(lower=0).rolling(14).mean()
-    loss_s         = (-delta.clip(upper=0)).rolling(14).mean()
-    df['rsi']      = 100 - (100 / (1 + gain / loss_s.replace(0, 1e-9)))
+    # ── RSI стандартный ──────────────────────────────────────────
+    delta  = c.diff()
+    gain   = delta.clip(lower=0).rolling(14).mean()
+    loss_s = (-delta.clip(upper=0)).rolling(14).mean()
+    df['rsi'] = 100 - (100 / (1 + gain / loss_s.replace(0, 1e-9)))
 
-    # Bollinger
-    mid            = c.rolling(20).mean()
-    std            = c.rolling(20).std()
+    # ── Адаптивный RSI — Лиховидов «Система 4 линий» ────────────
+    # Позиция RSI внутри своего скользящего диапазона за 50 баров
+    rsi_min = df['rsi'].rolling(50).min()
+    rsi_max = df['rsi'].rolling(50).max()
+    df['rsi_pct'] = (df['rsi'] - rsi_min) / (rsi_max - rsi_min + 1e-9)
+
+    # ── Bollinger Bands ──────────────────────────────────────────
+    mid           = c.rolling(20).mean()
+    std           = c.rolling(20).std()
     df['bb_upper'] = mid + 2 * std
     df['bb_lower'] = mid - 2 * std
     df['bb_pct']   = (c - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-9)
 
-    # ATR
-    tr             = pd.concat([h - l, (h - c.shift()).abs(),
-                                (l - c.shift()).abs()], axis=1).max(axis=1)
-    df['atr']      = tr.rolling(14).mean()
+    # ── ATR ──────────────────────────────────────────────────────
+    tr        = pd.concat([h - l,
+                           (h - c.shift()).abs(),
+                           (l - c.shift()).abs()], axis=1).max(axis=1)
+    df['atr'] = tr.rolling(14).mean()
 
-    # Объём
-    df['vol_ma']   = v.rolling(20).mean()
-    df['vol_ratio']= v / (df['vol_ma'] + 1e-9)
+    # ── Диапазон / ATR — Лиховидов «Торговые диапазоны» ─────────
+    df['range_norm']      = (h - l) / (c + 1e-9)              # нормированный диапазон свечи
+    df['range_atr_ratio'] = (h - l) / (df['atr'] + 1e-9)     # диапазон относительно ATR
 
-    # Моментум
-    df['roc5']     = c.pct_change(5)
-    df['roc10']    = c.pct_change(10)
+    # ── Объём ────────────────────────────────────────────────────
+    df['vol_ma']    = v.rolling(20).mean()
+    df['vol_ratio'] = v / (df['vol_ma'] + 1e-9)
 
-    # Stochastic
-    low14          = l.rolling(14).min()
-    high14         = h.rolling(14).max()
-    df['stoch']    = (c - low14) / (high14 - low14 + 1e-9) * 100
+    # ── Индекс настроения — Лиховидов «Индекс настроения рынка» ─
+    # Произведение дневного возврата и нормированного объёма:
+    # > 0 при росте на большом объёме (бычье давление)
+    # < 0 при падении на большом объёме (медвежье давление)
+    df['ret1']          = c.pct_change()
+    df['sent_vol_price'] = df['ret1'] * df['vol_ratio']
 
-    # ── Относительная сила vs IMOEX ───────────────────────
+    # ── Моментум ─────────────────────────────────────────────────
+    df['roc5']  = c.pct_change(5)
+    df['roc10'] = c.pct_change(10)
+
+    # ── Stochastic ───────────────────────────────────────────────
+    low14      = l.rolling(14).min()
+    high14     = h.rolling(14).max()
+    df['stoch'] = (c - low14) / (high14 - low14 + 1e-9) * 100
+
+    # ── Уровни Фибоначчи — Лиховидов «Золотое сечение» ──────────
+    # Расстояние от текущей цены до уровней 38.2% и 61.8%
+    # внутри скользящего диапазона 30 баров, нормированное на диапазон
+    roll_max      = c.rolling(30).max()
+    roll_min      = c.rolling(30).min()
+    fib_range     = roll_max - roll_min
+    lvl_382       = roll_max - 0.382 * fib_range
+    lvl_618       = roll_max - 0.618 * fib_range
+    df['dist_fib_382'] = (c - lvl_382) / (fib_range + 1e-9)
+    df['dist_fib_618'] = (c - lvl_618) / (fib_range + 1e-9)
+
+    # ── Относительная сила vs IMOEX ──────────────────────────────
     if imoex is not None:
-        idx_c = imoex['close'].astype(float).reindex(df.index, method='ffill')
-        ticker_ret5  = c.pct_change(5)
-        ticker_ret20 = c.pct_change(20)
-        imoex_ret5   = idx_c.pct_change(5)
-        imoex_ret20  = idx_c.pct_change(20)
-        df['rs_5d']  = ticker_ret5  / (imoex_ret5.abs()  + 1e-9)
-        df['rs_20d'] = ticker_ret20 / (imoex_ret20.abs() + 1e-9)
-        df['imoex_ret5']  = imoex_ret5
-        df['imoex_ret20'] = imoex_ret20
-        df['imoex_vol20'] = idx_c.pct_change().rolling(20).std()
+        idx_c           = imoex['close'].astype(float).reindex(df.index).ffill()
+        ticker_ret5     = c.pct_change(5)
+        ticker_ret20    = c.pct_change(20)
+        imoex_ret5      = idx_c.pct_change(5)
+        imoex_ret20     = idx_c.pct_change(20)
+        df['rs_5d']      = ticker_ret5  / (imoex_ret5.abs()  + 1e-9)
+        df['rs_20d']     = ticker_ret20 / (imoex_ret20.abs() + 1e-9)
+        df['imoex_ret5'] = imoex_ret5
+        df['imoex_ret20']= imoex_ret20
+        df['imoex_vol20']= idx_c.pct_change().rolling(20).std()
     else:
-        df['rs_5d']       = 0.0
-        df['rs_20d']      = 0.0
-        df['imoex_ret5']  = 0.0
-        df['imoex_ret20'] = 0.0
-        df['imoex_vol20'] = 0.0
+        for col in ('rs_5d','rs_20d','imoex_ret5','imoex_ret20','imoex_vol20'):
+            df[col] = 0.0
 
-    # ── Календарные признаки ──────────────────────────────
+    # ── Календарные признаки ─────────────────────────────────────
     if hasattr(df.index, 'dayofweek'):
         df['day_of_week'] = df.index.dayofweek / 4.0
         df['month']       = df.index.month / 12.0
@@ -94,38 +118,44 @@ def add_indicators(df: pd.DataFrame,
     return df
 
 
-# 15 базовых + 5 RS/IMOEX + 4 календарных = 24 признака
+# 15 базовых + 4 Лиховидова + 5 RS/IMOEX + 4 календарных = 28 признаков
 INDICATOR_COLS = [
+    # Тренд
     'ema9', 'ema21', 'ema50', 'macd', 'macd_sig',
-    'rsi', 'bb_upper', 'bb_lower', 'bb_pct', 'atr',
-    'vol_ratio', 'roc5', 'roc10', 'stoch', 'close',
-    'rs_5d', 'rs_20d',
-    'imoex_ret5', 'imoex_ret20', 'imoex_vol20',
+    # Осцилляторы
+    'rsi', 'rsi_pct',          # ← rsi_pct: адаптивный RSI (Лиховидов)
+    'stoch',
+    # Bollinger
+    'bb_upper', 'bb_lower', 'bb_pct',
+    # Волатильность / диапазон
+    'atr', 'range_norm', 'range_atr_ratio',  # ← range_* (Лиховидов)
+    # Объём и настроение
+    'vol_ratio', 'sent_vol_price',            # ← sent_vol_price (Лиховидов)
+    # Моментум
+    'roc5', 'roc10',
+    # Фибоначчи
+    'dist_fib_382', 'dist_fib_618',           # ← fib (Лиховидов)
+    # Цена
+    'close',
+    # RS к IMOEX
+    'rs_5d', 'rs_20d', 'imoex_ret5', 'imoex_ret20', 'imoex_vol20',
+    # Календарь
     'day_of_week', 'month', 'is_monday', 'is_friday',
 ]
 
 
-# ── Разметка с учётом комиссии ────────────────────────────
-
 def label_candles(df: pd.DataFrame) -> pd.Series:
-    """
-    Экономически обоснованная разметка.
-    HOLD = движение не окупает комиссию брокера.
-    """
-    close    = df['close'].astype(float)
-    future   = close.shift(-CFG.future_bars)
-    returns  = (future - close) / close
-    # Вычесть 2 комиссии (покупка + продажа)
-    net_ret  = returns - 2 * CFG.broker_commission
-    thr      = CFG.effective_profit_thr
-
-    labels   = np.ones(len(df), dtype=int)   # HOLD
-    labels[net_ret >  thr] = 0               # BUY
-    labels[net_ret < -thr] = 2               # SELL
+    """Экономически обоснованная разметка с учётом комиссии."""
+    close   = df['close'].astype(float)
+    future  = close.shift(-CFG.future_bars)
+    returns = (future - close) / close
+    net_ret = returns - 2 * CFG.broker_commission
+    thr     = CFG.effective_profit_thr
+    labels  = np.ones(len(df), dtype=int)   # HOLD
+    labels[net_ret >  thr] = 0              # BUY
+    labels[net_ret < -thr] = 2             # SELL
     return pd.Series(labels, index=df.index)
 
-
-# ── Нормализация окна ─────────────────────────────────────
 
 def normalize_window(window: pd.DataFrame) -> np.ndarray:
     arr  = window[INDICATOR_COLS].values.astype(float)
@@ -133,8 +163,6 @@ def normalize_window(window: pd.DataFrame) -> np.ndarray:
     max_ = arr.max(axis=0, keepdims=True)
     return (arr - min_) / (max_ - min_ + 1e-9)
 
-
-# ── Сборка датасета (MLP) ─────────────────────────────────
 
 def build_dataset(df: pd.DataFrame,
                   imoex: pd.DataFrame = None
@@ -157,8 +185,6 @@ def build_dataset(df: pd.DataFrame,
         np.array(y,      dtype=np.int64),
     )
 
-
-# ── Загрузка данных ───────────────────────────────────────
 
 def load_ticker_data(ticker: str) -> pd.DataFrame:
     from api.routes.candles import get_client
@@ -190,26 +216,24 @@ def load_imoex() -> pd.DataFrame | None:
     return None
 
 
-
-
 def build_full_dataset() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     print("  Загружаем IMOEX...")
-    imoex    = load_imoex()
+    imoex = load_imoex()
 
     all_flat, all_img, all_y = [], [], []
     for ticker in CFG.tickers:
         print(f"  Загружаем {ticker}...")
         try:
-            df = load_ticker_data(ticker)
+            df             = load_ticker_data(ticker)
             X_flat, X_img, y = build_dataset(df, imoex)
             if len(y) == 0:
                 continue
             all_flat.append(X_flat)
             all_img.append(X_img)
             all_y.append(y)
-            print(f"  {ticker}: {len(y)} сэмплов")
+            print(f"    {ticker}: {len(y)} сэмплов")
         except Exception as e:
-            print(f"  {ticker}: ошибка — {e}")
+            print(f"    {ticker}: ошибка — {e}")
 
     if not all_flat:
         raise RuntimeError("Не удалось загрузить ни одного тикера.")
@@ -226,3 +250,4 @@ def class_distribution(y: np.ndarray):
     for label, name in {0: "BUY", 1: "HOLD", 2: "SELL"}.items():
         count = int((y == label).sum())
         print(f"  {name:4s}: {count:5d} ({count/total*100:.1f}%)")
+
