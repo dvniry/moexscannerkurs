@@ -32,7 +32,8 @@ def run_multiscale_training(mode: str = "standard"):
     """
     mode: 'standard' (--multiscale) | 'deep' (--deep)
     """
-    label = {"standard": "Standard CNN", "deep": "Deep Hybrid (TCN+BiLSTM+Attention)"}
+    label = {"standard": "Hybrid (CNN+TCN+BiLSTM+Attention) 2-phase",
+             "deep": "Deep Hybrid (CNN+TCN+BiLSTM+Attention) 3-phase"}
     print("=" * 50 + f"\nMultiScale [{label[mode]}]\n" + "=" * 50)
 
     from ml.dataset_v2     import build_full_multiscale_dataset
@@ -66,7 +67,7 @@ def run_multiscale_training(mode: str = "standard"):
         save_path = 'ml/model_multiscale.pt'
         model     = train_multiscale(tr_ds, y_tr, val_ds, y_val,
                                      ctx_dim, save_path=save_path)
-        hybrid    = False
+        hybrid    = True
 
     print("\n" + "=" * 50 + "\nОценка\n" + "=" * 50)
     evaluate_multiscale(model, te_ds, y_test, ctx_dim,

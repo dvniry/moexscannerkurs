@@ -133,7 +133,7 @@ class MultiScaleHybrid(nn.Module):
       - Контекстный вектор ctx (HMM-режим + секторный)
     """
     def __init__(self, ctx_dim: int = 0,
-                 n_indicator_cols: int = 28,
+                 n_indicator_cols: int = 30,
                  lstm_hidden: int = 128, lstm_layers: int = 2):
         super().__init__()
         n_scales = len(SCALES)
@@ -293,14 +293,17 @@ def _forward(model, batch, device, ctx_dim, hybrid=False):
 def _train_loop(model, tr_loader, val_loader, y_val,
                 n_epochs, max_lr, wd, patience_limit,
                 criterion, save_path, phase_name,
-                device, ctx_dim, hybrid=False, mixup_alpha=0.2):
+                device, ctx_dim, hybrid=False, mixup_alpha=0.2,
+                accum_steps: int = 1):
 
+    import math
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=max_lr / 10, weight_decay=wd)
+    opt_steps_per_epoch = math.ceil(len(tr_loader) / accum_steps)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=max_lr,
-        steps_per_epoch=len(tr_loader), epochs=n_epochs,
+        steps_per_epoch=opt_steps_per_epoch, epochs=n_epochs,
         pct_start=0.2, div_factor=10, final_div_factor=200)
 
     best_acc, patience = 0.0, 0
@@ -308,8 +311,9 @@ def _train_loop(model, tr_loader, val_loader, y_val,
     for epoch in range(1, n_epochs + 1):
         model.train()
         total_loss = 0.0
+        optimizer.zero_grad()
 
-        for batch in tr_loader:
+        for step, batch in enumerate(tr_loader, 1):
             imgs_dict, num_dict, y, ctx = batch
             imgs_dict = {W: imgs_dict[W].to(device) for W in SCALES}
             y   = y.to(device)
@@ -324,14 +328,16 @@ def _train_loop(model, tr_loader, val_loader, y_val,
                 logits = model(imgs_m, ctx=ctx)
 
             loss = (lam * criterion(logits, y_a) +
-                    (1 - lam) * criterion(logits, y_b))
+                    (1 - lam) * criterion(logits, y_b)) / accum_steps
 
-            optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
-            total_loss += loss.item()
+            total_loss += loss.item() * accum_steps
+
+            if step % accum_steps == 0 or step == len(tr_loader):
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
 
         model.eval()
         correct = 0
@@ -361,12 +367,14 @@ def _train_loop(model, tr_loader, val_loader, y_val,
 
 # ══════════════════════════════════════════════════════════════════
 #  train_multiscale — стандартный режим (--multiscale)
+#  Использует MultiScaleHybrid (CNN + TCN + BiLSTM + Attention),
+#  но с 2-фазным обучением (pretrain → finetune).
 # ══════════════════════════════════════════════════════════════════
 
 def train_multiscale(tr_ds, y_tr, val_ds, y_val, ctx_dim,
                      save_path='ml/model_multiscale.pt'):
     device    = get_device()
-    model     = MultiScaleCNN(ctx_dim=ctx_dim).to(device)
+    model     = MultiScaleHybrid(ctx_dim=ctx_dim).to(device)
     counts    = np.bincount(y_tr)
     weights   = torch.tensor(counts.sum() / (3 * counts),
                               dtype=torch.float).to(device)
@@ -374,24 +382,24 @@ def train_multiscale(tr_ds, y_tr, val_ds, y_val, ctx_dim,
     tr_loader = _make_loader(tr_ds, CFG.batch_size, True)
     val_loader= _make_loader(val_ds, CFG.batch_size, False)
 
-    print("\n  ── Фаза 1: Pretrain (backbone заморожен) ──")
-    for p in model.backbone[0].parameters():
+    print("\n  ── Фаза 1: Pretrain (backbone заморожен, TCN+BiLSTM учатся) ──")
+    for p in model.backbone.parameters():
         p.requires_grad = False
     _train_loop(model, tr_loader, val_loader, y_val,
                 n_epochs=30, max_lr=1e-3, wd=1e-4, patience_limit=10,
                 criterion=criterion, save_path=save_path,
                 phase_name="F1-pretrain", device=device,
-                ctx_dim=ctx_dim, hybrid=False, mixup_alpha=0.2)
+                ctx_dim=ctx_dim, hybrid=True, mixup_alpha=0.2)
 
-    print("\n  ── Фаза 2: Fine-tune (features[8] + head) ──")
+    print("\n  ── Фаза 2: Fine-tune (features[6,7,8] + всё остальное) ──")
     for name, p in model.backbone[0].named_parameters():
-        if name.split('.')[0] == '8':
+        if name.split('.')[0] in ('6', '7', '8'):
             p.requires_grad = True
     _train_loop(model, tr_loader, val_loader, y_val,
                 n_epochs=25, max_lr=1e-4, wd=5e-3, patience_limit=8,
                 criterion=criterion, save_path=save_path,
                 phase_name="F2-finetune", device=device,
-                ctx_dim=ctx_dim, hybrid=False, mixup_alpha=0.2)
+                ctx_dim=ctx_dim, hybrid=True, mixup_alpha=0.2)
     return model
 
 
@@ -429,15 +437,24 @@ def train_multiscale_deep(tr_ds, y_tr, val_ds, y_val, ctx_dim,
                 phase_name="F2-finetune", device=device,
                 ctx_dim=ctx_dim, hybrid=True, mixup_alpha=0.3)
 
-    print("\n  ── Фаза 3/3: Deep fine-tune — весь backbone ──")
+    print("\n  ── Фаза 3/3: Deep fine-tune — весь backbone (малый batch + accum) ──")
     for p in model.backbone.parameters():
         p.requires_grad = True
-    _train_loop(model, tr_loader, val_loader, y_val,
+    torch.cuda.empty_cache()
+    # Уменьшаем batch до 16 с accum_steps=4 → эффективный batch=64
+    deep_bs     = max(8, CFG.batch_size // 4)
+    accum       = CFG.batch_size // deep_bs
+    tr_loader3  = _make_loader(tr_ds, deep_bs, True)
+    val_loader3 = _make_loader(val_ds, deep_bs, False)
+    print(f"  (batch={deep_bs}, accum={accum}, effective={deep_bs * accum})")
+    _train_loop(model, tr_loader3, val_loader3, y_val,
                 n_epochs=20, max_lr=5e-6, wd=5e-3, patience_limit=8,
                 criterion=criterion, save_path=save_path,
                 phase_name="F3-deep", device=device,
-                ctx_dim=ctx_dim, hybrid=True, mixup_alpha=0.1)
+                ctx_dim=ctx_dim, hybrid=True, mixup_alpha=0.1,
+                accum_steps=accum)
     return model
+
 
 
 # ══════════════════════════════════════════════════════════════════
