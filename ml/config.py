@@ -86,7 +86,7 @@ class MLConfig:
     market_dim:      int   = 16
 
     # Обучение
-    batch_size:   int   = 128   
+    batch_size:   int   = 64   
     epochs_pre:   int   = 50   
     epochs_fine:  int   = 25
     val_split:    float = 0.2
