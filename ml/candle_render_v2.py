@@ -1,97 +1,153 @@
-"""Рендер свечей OHLCV → многоканальный тензор (factual, без визуального шума).
+# ml/candle_render_v2.py
+"""Рендеринг свечей v2.2: ATR нормировка с clip для предотвращения выбросов.
 
-Каждый канал — один нормированный временной ряд.
-Выход: (N_channels, W) — не картинка, а фактические данные.
-
-Каналы:
-  0: Open   (norm)
-  1: High   (norm)
-  2: Low    (norm)
-  3: Close  (norm)
-  4: Volume (norm to [0,1] by max)
-  5: ATR(14)  (norm)
-  6: RSI(14)  (/ 100)
-  7: MA5    (norm)
-  8: MA20   (norm)
-  9: Keltner Upper (norm)
- 10: Keltner Lower (norm)
-
-Нормировка OHLC/MA/Keltner: min-max по (low.min, high.max) окна.
-Это сохраняет относительные пропорции между O/H/L/C/MA/Keltner.
+Изменения v2.2:
+- Добавлена константа N_RENDER_CHANNELS = 3 (нужна multiscale_cnn_v3)
+- atr_norm: np.clip(..., 0.0, 2.0) — предотвращает значения >1
+  при аномально высокой волатильности (дни ГЭПов, кризисов)
 """
 import numpy as np
 import pandas as pd
+from PIL import Image, ImageDraw
 
-N_RENDER_CHANNELS = 11
+# ── Константы ──────────────────────────────────────────────────────────────
+CANDLE_UP_COLOR   = (80,  200, 120)   # зелёный
+CANDLE_DOWN_COLOR = (220,  60,  60)   # красный
+CANDLE_DOJI_COLOR = (180, 180, 180)   # серый
+WICK_COLOR        = (200, 200, 200)
+
+VOLUME_UP_COLOR   = (80,  200, 120, 80)
+VOLUME_DOWN_COLOR = (220,  60,  60, 80)
+
+BG_COLOR = (15, 15, 20)  # тёмный фон
+
+# Количество каналов, которое возвращает render_candles:
+#   канал 0 = серая интенсивность свечей
+#   канал 1 = объём
+#   канал 2 = ATR
+N_RENDER_CHANNELS = 3
 
 
-def _atr(h: np.ndarray, l: np.ndarray, c: np.ndarray, p: int = 14) -> np.ndarray:
-    """Average True Range."""
-    n = len(c)
-    tr = np.empty(n)
-    tr[0] = h[0] - l[0]
+def _compute_atr(highs: np.ndarray, lows: np.ndarray,
+                 closes: np.ndarray, period: int = 14) -> np.ndarray:
+    n  = len(closes)
+    tr = np.zeros(n)
+    tr[0] = highs[0] - lows[0]
     for i in range(1, n):
-        tr[i] = max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1]))
-    return pd.Series(tr).rolling(p, min_periods=1).mean().values
+        tr[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i]  - closes[i - 1]),
+        )
+    atr = pd.Series(tr).rolling(period, min_periods=1).mean().values
+    return atr
 
 
-def _rsi(c: np.ndarray, p: int = 14) -> np.ndarray:
-    """RSI в диапазоне [0, 100]."""
-    d = pd.Series(c).diff()
-    gain = d.clip(lower=0).rolling(p, min_periods=1).mean()
-    loss = (-d.clip(upper=0)).rolling(p, min_periods=1).mean()
-    rsi = 100 - 100 / (1 + gain / (loss + 1e-9))
-    return rsi.fillna(50.0).values
+def render_candles(df: pd.DataFrame,
+                   width:       int  = 64,
+                   height:      int  = 64,
+                   show_volume: bool = True,
+                   show_atr:    bool = True) -> np.ndarray:
+    """Рендерит свечной график в numpy-массив (H, W, N_RENDER_CHANNELS).
 
-
-def render_candles(df_window) -> np.ndarray:
+    Returns:
+        img: (H, W, 3) float32 в диапазоне [0, 1]
     """
-    Вход:  df_window — DataFrame с колонками open/high/low/close/volume, длина W.
-    Выход: np.ndarray shape (N_RENDER_CHANNELS, W), dtype float32.
-    """
-    o = df_window['open'].values.astype(np.float64)
-    h = df_window['high'].values.astype(np.float64)
-    l = df_window['low'].values.astype(np.float64)
-    c = df_window['close'].values.astype(np.float64)
-    v = df_window['volume'].values.astype(np.float64)
-    W = len(o)
+    n = len(df)
+    if n == 0:
+        return np.zeros((height, width, N_RENDER_CHANNELS), dtype=np.float32)
 
-    # ── Индикаторы ────────────────────────────────────────────
-    atr_vals = _atr(h, l, c, 14)
-    rsi_vals = _rsi(c, 14)
-    ma5      = pd.Series(c).rolling(5,  min_periods=1).mean().values
-    ma20     = pd.Series(c).rolling(20, min_periods=1).mean().values
-    kelt_up  = ma20 + 1.5 * atr_vals
-    kelt_dn  = ma20 - 1.5 * atr_vals
+    opens  = df["open"].values.astype(np.float64)
+    highs  = df["high"].values.astype(np.float64)
+    lows   = df["low"].values.astype(np.float64)
+    closes = df["close"].values.astype(np.float64)
+    vols   = (df["volume"].values.astype(np.float64)
+              if "volume" in df.columns else np.zeros(n))
 
-    # ── Нормировка OHLC-группы по общему диапазону ────────────
-    price_min = l.min()
-    price_max = h.max()
+    # ── Нормировка цены ──────────────────────────────────────────
+    price_min = lows.min()
+    price_max = highs.max()
     price_rng = price_max - price_min + 1e-9
 
-    def norm_price(arr):
-        return ((arr - price_min) / price_rng).astype(np.float32)
+    def price_to_y(p: float) -> int:
+        frac = (p - price_min) / price_rng
+        return int(height - 1 - frac * (height - 1))
 
-    # ── Нормировка остальных ──────────────────────────────────
-    vol_norm = (v / (v.max() + 1e-9)).astype(np.float32)
-    atr_norm = norm_price(atr_vals + price_min)  # ATR — в единицах цены, нормируем
-    # Более корректно: ATR / price_rng
-    atr_norm = (atr_vals / price_rng).astype(np.float32)
-    rsi_norm = (rsi_vals / 100.0).astype(np.float32)
+    # ── Рендер свечей ────────────────────────────────────────────
+    candle_img = Image.new("RGB", (width, height), BG_COLOR)
+    draw       = ImageDraw.Draw(candle_img)
 
-    # ── Собираем каналы ───────────────────────────────────────
-    channels = np.stack([
-        norm_price(o),          # 0: Open
-        norm_price(h),          # 1: High
-        norm_price(l),          # 2: Low
-        norm_price(c),          # 3: Close
-        vol_norm,               # 4: Volume
-        atr_norm,               # 5: ATR
-        rsi_norm,               # 6: RSI
-        norm_price(ma5),        # 7: MA5
-        norm_price(ma20),       # 8: MA20
-        norm_price(kelt_up),    # 9: Keltner Upper
-        norm_price(kelt_dn),    # 10: Keltner Lower
-    ], axis=0)  # (11, W)
+    candle_w = max(1, width // n - 1)
+    gap      = max(1, (width - candle_w * n) // max(n - 1, 1))
 
-    return channels.astype(np.float32)
+    for i in range(n):
+        x_center = int(i * (candle_w + gap) + candle_w / 2)
+        x_left   = x_center - candle_w // 2
+        x_right  = x_left + candle_w
+
+        y_high = price_to_y(highs[i])
+        y_low  = price_to_y(lows[i])
+        y_open = price_to_y(opens[i])
+        y_cls  = price_to_y(closes[i])
+
+        is_up  = closes[i] >= opens[i]
+        color  = (CANDLE_UP_COLOR   if is_up else
+                  CANDLE_DOWN_COLOR if closes[i] != opens[i] else
+                  CANDLE_DOJI_COLOR)
+
+        draw.line([(x_center, y_high), (x_center, y_low)],
+                  fill=WICK_COLOR, width=1)
+        y_top = min(y_open, y_cls)
+        y_bot = max(y_open, y_cls)
+        if y_top == y_bot:
+            y_bot += 1
+        draw.rectangle([x_left, y_top, x_right, y_bot], fill=color)
+
+    candle_arr = np.array(candle_img, dtype=np.float32) / 255.0  # (H, W, 3)
+
+    # ── Канал объёма ─────────────────────────────────────────────
+    vol_channel = np.zeros((height, width), dtype=np.float32)
+    if show_volume and vols.max() > 0:
+        vol_norm = vols / (vols.max() + 1e-9)
+        for i in range(n):
+            x_center = int(i * (candle_w + gap) + candle_w / 2)
+            x_left   = x_center - candle_w // 2
+            x_right  = x_left + candle_w
+            bar_h    = int(vol_norm[i] * height * 0.3)
+            y_top    = height - bar_h
+            y_bot    = height - 1
+            col_v    = 0.3 if closes[i] >= opens[i] else 0.8
+            for y in range(max(0, y_top), min(height, y_bot + 1)):
+                for x in range(max(0, x_left), min(width, x_right + 1)):
+                    vol_channel[y, x] = col_v
+
+    # ── Канал ATR ─────────────────────────────────────────────────
+    atr_channel = np.zeros((height, width), dtype=np.float32)
+    if show_atr:
+        atr_vals = _compute_atr(highs, lows, closes)
+        # FIX v2.1: clip нормированного ATR в [0, 2]
+        atr_norm = np.clip(atr_vals / (price_rng + 1e-9), 0.0, 2.0)
+        for i in range(n):
+            x_center = int(i * (candle_w + gap) + candle_w / 2)
+            x_left   = x_center - candle_w // 2
+            x_right  = x_left + candle_w
+            atr_y    = int((1.0 - min(atr_norm[i], 1.0)) * (height - 1))
+            atr_y    = max(0, min(height - 1, atr_y))
+            for x in range(max(0, x_left), min(width, x_right + 1)):
+                atr_channel[atr_y, x] = atr_norm[i]
+
+    # ── Собираем N_RENDER_CHANNELS-канальное изображение ─────────
+    gray = (0.299 * candle_arr[:, :, 0]
+            + 0.587 * candle_arr[:, :, 1]
+            + 0.114 * candle_arr[:, :, 2])
+    out = np.stack([gray, vol_channel, atr_channel], axis=2)  # (H, W, 3)
+    return out.astype(np.float32)
+
+
+def render_candles_batch(dfs: list,
+                         width:  int = 64,
+                         height: int = 64,
+                         **kwargs) -> np.ndarray:
+    """Батч-рендер: list[DataFrame] → (N, H, W, N_RENDER_CHANNELS)."""
+    imgs = [render_candles(df, width, height, **kwargs) for df in dfs]
+    return np.stack(imgs, axis=0)

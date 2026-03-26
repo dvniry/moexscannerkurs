@@ -1,112 +1,140 @@
-"""OHLC-регрессионная разметка.
+# ml/labels_ohlc.py
+"""OHLC-лейблы v3.3: классификация направления первой свечи вместо торгового сигнала.
 
-Для каждого момента t предсказываем future_bars свечей (по умолчанию 5).
-Выход: (future_bars, 4) = 20 значений — относительные изменения O/H/L/C
-от текущего close[t].
-
-  ΔO[t+k] = (Open[t+k]  - Close[t]) / Close[t]
-  ΔH[t+k] = (High[t+k]  - Close[t]) / Close[t]
-  ΔL[t+k] = (Low[t+k]   - Close[t]) / Close[t]
-  ΔC[t+k] = (Close[t+k] - Close[t]) / Close[t]
-
-Дополнительно сохраняем классификационную метку (BUY/HOLD/SELL)
-для multi-task обучения.
+Изменения v3.2 → v3.3:
+- cls_labels теперь UP(0) / FLAT(1) / DOWN(2) по ΔClose[+1]
+- Порог адаптивный (ATR-based) как раньше, но применяется к одной свече
+- Убран net_return за future_bars — торговая логика остаётся в Lua-стратегии
+- ohlc_to_strategy_features без изменений (совместимость с backtest.py)
 """
 import numpy as np
 import pandas as pd
 from ml.config import CFG
 
 
-def build_ohlc_labels(df: pd.DataFrame) -> tuple:
+def _compute_adaptive_threshold(df: pd.DataFrame) -> np.ndarray:
+    high  = df['high'].values.astype(np.float64)
+    low   = df['low'].values.astype(np.float64)
+    close = df['close'].values.astype(np.float64)
+
+    tr = np.zeros(len(df))
+    tr[0] = high[0] - low[0]
+    for i in range(1, len(df)):
+        tr[i] = max(
+            high[i] - low[i],
+            abs(high[i] - close[i - 1]),
+            abs(low[i]  - close[i - 1]),
+        )
+
+    atr       = pd.Series(tr).rolling(20, min_periods=5).mean().ffill()
+    vol_ratio = atr / (close + 1e-9)
+    vol_ratio = np.clip(vol_ratio, 0, 2.0)   # защита от выбросов
+
+    k          = CFG.adaptive_k
+    min_thr    = CFG.adaptive_min_thr
+    commission = 2 * CFG.broker_commission
+
+    thresholds = np.maximum(min_thr, k * vol_ratio) + commission
+    return thresholds.astype(np.float64)
+
+
+def build_ohlc_labels(df: pd.DataFrame):
+    """Строит OHLC regression labels + direction classification labels.
+
+    Returns:
+        ohlc_labels : (N, future_bars * 4) — ΔO, ΔH, ΔL, ΔC для каждого бара
+                      все дельты относительно close[i] текущей свечи
+        cls_labels  : (N,) — 0=UP, 1=FLAT, 2=DOWN
+                      направление ПЕРВОЙ следующей свечи (ΔClose[i+1])
+        valid_mask  : (N,) — True если label валиден
     """
-    Вход:  df с колонками open/high/low/close (после add_indicators и dropna).
-    Выход: (ohlc_labels, cls_labels, valid_mask)
-        ohlc_labels: np.ndarray (N, future_bars, 4) — ΔO, ΔH, ΔL, ΔC
-        cls_labels:  np.ndarray (N,) — 0=BUY, 1=HOLD, 2=SELL
-        valid_mask:  np.ndarray (N,) — bool, True если все future_bars доступны
-    """
-    o = df['open'].values.astype(np.float64)
-    h = df['high'].values.astype(np.float64)
-    l = df['low'].values.astype(np.float64)
-    c = df['close'].values.astype(np.float64)
+    F = CFG.future_bars
     N = len(df)
-    F = CFG.future_bars  # 5
 
-    ohlc = np.zeros((N, F, 4), dtype=np.float32)
-    valid = np.zeros(N, dtype=bool)
+    close = df['close'].values.astype(np.float64)
+    open_ = df['open'].values.astype(np.float64)
+    high  = df['high'].values.astype(np.float64)
+    low   = df['low'].values.astype(np.float64)
 
-    for t in range(N - F):
-        base = c[t]
-        if base < 1e-9:
+    ohlc_labels = np.zeros((N, F * 4), dtype=np.float32)
+    cls_labels  = np.ones(N, dtype=np.int64)   # default = FLAT
+    valid_mask  = np.zeros(N, dtype=bool)
+
+    if CFG.use_adaptive_threshold:
+        thresholds = _compute_adaptive_threshold(df)
+    else:
+        thresholds = np.full(N, CFG.effective_profit_thr)
+
+    for i in range(N - F):
+        c = close[i]
+        if c <= 0:
             continue
-        for k in range(F):
-            idx = t + 1 + k
-            ohlc[t, k, 0] = (o[idx] - base) / base   # ΔO
-            ohlc[t, k, 1] = (h[idx] - base) / base   # ΔH
-            ohlc[t, k, 2] = (l[idx] - base) / base   # ΔL
-            ohlc[t, k, 3] = (c[idx] - base) / base   # ΔC
-        valid[t] = True
 
-    # ── Классификационная метка (для multi-task) ──────────────
-    # На основе net return последнего close
-    net_ret = np.zeros(N, dtype=np.float64)
-    net_ret[:N - F] = ohlc[:N - F, -1, 3] - 2 * CFG.broker_commission
-    thr = CFG.effective_profit_thr
+        valid_mask[i] = True
 
-    cls = np.ones(N, dtype=np.int64)       # HOLD
-    cls[net_ret > thr] = 0                 # BUY
-    cls[net_ret < -thr] = 2                # SELL
+        # ── OHLC регрессия: F свечей вперёд ──────────────────────
+        for j in range(F):
+            fi = i + j + 1
+            if fi >= N:
+                valid_mask[i] = False
+                break
+            ohlc_labels[i, j * 4 + 0] = (open_[fi] - c) / c   # ΔOpen
+            ohlc_labels[i, j * 4 + 1] = (high[fi]  - c) / c   # ΔHigh
+            ohlc_labels[i, j * 4 + 2] = (low[fi]   - c) / c   # ΔLow
+            ohlc_labels[i, j * 4 + 3] = (close[fi] - c) / c   # ΔClose
 
-    return ohlc, cls, valid
+        if not valid_mask[i]:
+            continue
+
+        # ── Классификация: направление ПЕРВОЙ свечи ──────────────
+        # Используем ΔClose[i+1] — самый надёжный сигнал для aux loss
+        delta_close_1 = (close[i + 1] - c) / c
+        thr = thresholds[i]
+
+        if delta_close_1 > thr:
+            cls_labels[i] = 0   # UP
+        elif delta_close_1 < -thr:
+            cls_labels[i] = 2   # DOWN
+        else:
+            cls_labels[i] = 1   # FLAT
+
+    return ohlc_labels, cls_labels, valid_mask
 
 
 def ohlc_to_strategy_features(ohlc_pred: np.ndarray) -> dict:
+    """Преобразует OHLC предсказание в торговые фичи для backtest/Lua.
+
+    Args:
+        ohlc_pred: (F*4,) или (F, 4) — ΔO, ΔH, ΔL, ΔC
+
+    Returns:
+        dict с ключами совместимыми с backtest.direction_risk_reward
     """
-    Из предсказанных (future_bars, 4) извлекает торговые метрики.
+    ohlc = np.asarray(ohlc_pred, dtype=np.float32).reshape(-1, 4)  # (F, 4)
 
-    Вход:  ohlc_pred shape (F, 4) — ΔO, ΔH, ΔL, ΔC для F будущих свечей.
-    Выход: dict с ключами:
-      - max_upside:     max(ΔH) — максимальный потенциал роста
-      - max_downside:   min(ΔL) — максимальная просадка
-      - final_return:   ΔC[-1]  — return к концу горизонта
-      - risk_reward:    max_upside / abs(max_downside)
-      - best_entry_bar: бар с min(ΔL) — лучшая точка входа
-      - best_exit_bar:  бар с max(ΔH) — лучшая точка выхода
-      - direction:      BUY / HOLD / SELL (на основе final_return и risk/reward)
-      - volatility:     std по всем ΔC — ожидаемая волатильность
-    """
-    dH = ohlc_pred[:, 1]  # ΔHigh
-    dL = ohlc_pred[:, 2]  # ΔLow
-    dC = ohlc_pred[:, 3]  # ΔClose
+    max_high    = float(ohlc[:, 1].max())
+    min_low     = float(ohlc[:, 2].min())
+    final_close = float(ohlc[-1, 3])
+    avg_close   = float(ohlc[:, 3].mean())
+    next_close  = float(ohlc[0, 3])   # ΔClose первой свечи — новый ключ
 
-    max_up   = float(dH.max())
-    max_down = float(dL.min())
-    final_ret = float(dC[-1])
-    vol      = float(dC.std())
-
-    # Risk/reward
-    risk = abs(max_down) if max_down < 0 else 1e-9
-    rr   = max(max_up, 0) / risk   # если upside < 0, rr = 0
-
-    # Направление: учитываем и final return, и risk/reward
-    thr = CFG.effective_profit_thr
-    commission = 2 * CFG.broker_commission
-    net_final = final_ret - commission
-
-    if net_final > thr and rr > 1.5:
-        direction = "BUY"
-    elif net_final < -thr and rr < 0.67:
-        direction = "SELL"
-    else:
-        direction = "HOLD"
+    max_upside   = max(max_high, 0.0)
+    max_downside = min(min_low,  0.0)
 
     return {
-        "max_upside":     max_up,
-        "max_downside":   max_down,
-        "final_return":   final_ret,
-        "risk_reward":    rr,
-        "best_entry_bar": int(dL.argmin()),
-        "best_exit_bar":  int(dH.argmax()),
-        "direction":      direction,
-        "volatility":     vol,
+        # ── первичные (используются в backtest.py) ────────────────
+        'max_upside':   max_upside,
+        'max_downside': max_downside,
+        'final_return': final_close,
+        # ── новые ────────────────────────────────────────────────
+        'next_close':   next_close,     # ΔClose завтра — для Lua
+        'momentum':     avg_close,      # средний тренд за горизонт
+        # ── дополнительные ───────────────────────────────────────
+        'avg_close':    avg_close,
+        'expected_move': float(max(abs(max_upside), abs(max_downside))),
+        'range':        float(max_upside - max_downside),
+        # ── legacy aliases ────────────────────────────────────────
+        'max_high':     max_high,
+        'min_low':      min_low,
+        'final_close':  final_close,
     }
