@@ -34,7 +34,60 @@ def _get_uid(client, ticker: str) -> str | None:
     return uid
 
 
-def load_context_series(ticker: str) -> pd.DataFrame | None:
+def _load_indicative_chunked(client, sym: str) -> 'pd.DataFrame | None':
+    """Загружает индикативный инструмент чанками по 365 дней."""
+    import time as _time
+    from datetime import timedelta
+    from t_tech.invest import Client, CandleInterval
+    from t_tech.invest.utils import now as _now
+
+    uid = _get_uid(client, sym)
+    if not uid:
+        print(f"    [WARN] {sym}: uid не найден")
+        return None
+
+    TARGET     = "invest-public-api.tbank.ru:443"
+    CHUNK_DAYS = 365
+    all_frames = []
+    end        = _now()
+    remaining  = CFG.days_back
+    chunk_num  = 0
+
+    while remaining > 0:
+        chunk = min(remaining, CHUNK_DAYS)
+        start = end - timedelta(days=chunk)
+        try:
+            with Client(client.token, target=TARGET) as api:
+                candles = api.market_data.get_candles(
+                    instrument_id=uid,
+                    from_=start,
+                    to=end,
+                    interval=CandleInterval.CANDLE_INTERVAL_DAY,
+                ).candles
+            if candles:
+                df_chunk = pd.DataFrame({
+                    "time":  [c.time            for c in candles],
+                    "close": [client._q(c.close) for c in candles],
+                }).set_index("time")
+                all_frames.append(df_chunk)
+            chunk_num += 1
+        except Exception as e:
+            print(f"    [WARN] {sym} chunk {start.date()}→{end.date()}: {e}")
+
+        end        = start
+        remaining -= chunk
+        _time.sleep(0.1)
+
+    if not all_frames:
+        return None
+
+    result = pd.concat(all_frames).sort_index()
+    result = result[~result.index.duplicated(keep='first')]
+    print(f"    Контекст {sym}: {len(result)} свечей ({chunk_num} чанков)")
+    return result['close'].rename(sym)
+
+
+def load_context_series(ticker: str) -> 'pd.DataFrame | None':
     from api.routes.candles import get_client
     client  = get_client()
     symbols = SECTOR_CONTEXT.get(ticker, SECTOR_CONTEXT["__default__"])
@@ -42,17 +95,9 @@ def load_context_series(ticker: str) -> pd.DataFrame | None:
 
     for sym in symbols:
         try:
-            uid = _get_uid(client, sym)
-            if not uid:
-                print(f"    [WARN] {sym}: uid не найден")
-                continue
-            df = client.get_candles_by_uid(
-                uid=uid, interval=CFG.interval, days_back=CFG.days_back)
-            if df is not None and not df.empty:
-                frames[sym] = df['close'].astype(float)
-                print(f"    Контекст {sym}: {len(df)} свечей")
-            else:
-                print(f"    [WARN] {sym}: пустые данные")
+            series = _load_indicative_chunked(client, sym)
+            if series is not None:
+                frames[sym] = series
         except Exception as e:
             print(f"    [WARN] {sym}: {e}")
 
@@ -269,8 +314,11 @@ def build_context_features(
         sig = arr[:norm_end, :n_numeric].std(axis=0, keepdims=True) + 1e-9
         arr[:, :n_numeric] = (arr[:, :n_numeric] - mu) / sig
 
-    # Clamp экстремальных значений
+    # ── Clamp экстремальных значений ─────────────────────────
     arr[:, :n_numeric] = np.clip(arr[:, :n_numeric], -5.0, 5.0)
+
+    # ── GUARD: заменяем любые NaN/Inf нулями ─────────────────
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
 
     return arr.astype(np.float32)
 

@@ -26,6 +26,20 @@ SECTOR_CONTEXT = {
     "IRAO": ["IMOEX", "RVI"],  "PIKK": ["IMOEX", "RVI"],
     "AFKS": ["IMOEX", "RVI"],
     "__default__": ["IMOEX", "RVI"],
+    "TRNFP": ["IMOEX", "LCOc1"],
+    "BANEP": ["IMOEX", "LCOc1"],
+    "SELG":  ["IMOEX", "XAU"],
+    "UGLD":  ["IMOEX", "XAU"],
+    "TCSG":  ["IMOEX", "RVI"],
+    "HYDR":  ["IMOEX", "RVI"],
+    "FEES":  ["IMOEX", "RVI"],
+    "MSNG":  ["IMOEX", "RVI"],
+    "UPRO":  ["IMOEX", "RVI"],
+    "FIXP":  ["IMOEX", "RVI"],
+    "LENT":  ["IMOEX", "RVI"],
+    "DSKY":  ["IMOEX", "RVI"],
+    "SMLT":  ["IMOEX", "RVI"],
+    "CIAN":  ["IMOEX", "RVI"],
 }
 
 
@@ -34,7 +48,7 @@ class MLConfig:
     # ── Данные ──────────────────────────────────────────────────
     tickers:    list  = None
     interval:   str   = "1d"
-    days_back:  int   = 1825
+    days_back:  int   = 3650  
     future_bars: int  = 5
     profit_thr: float = 0.010
     loss_thr:   float = -0.010
@@ -78,6 +92,7 @@ class MLConfig:
     def __post_init__(self):
         if self.tickers is None:
             self.tickers = [
+                # Уже есть (35 тикеров)
                 "SBER", "GAZP", "LKOH", "GMKN", "NVTK",
                 "ROSN", "TATN", "MGNT", "MTSS", "T",
                 "ALRS", "PLZL", "SNGS", "VTBR", "AFLT",
@@ -85,6 +100,26 @@ class MLConfig:
                 "YDEX", "MOEX", "IRAO", "PIKK", "RTKM",
                 "RUAL", "OZON", "FIVE", "HEAD", "FLOT",
                 "SVCB", "AFKS", "BSPB", "VKCO", "POSI",
+                # ── Новые: нефть/газ ──────────────────────────────────
+                "TRNFP",   # Транснефть-ап (высоколиквидна)
+                "BANEP",   # Башнефть-ап
+                # ── Новые: металлы/горнодобыча ───────────────────────
+                "SELG",    # Селигдар (золото)
+                "UGLD",    # ЮГК
+                # ── Новые: банки/финансы ─────────────────────────────
+                "TCSG",    # ТКС (много данных, высокая ликвидность)
+                # ── Новые: энергетика ────────────────────────────────
+                "HYDR",    # РусГидро
+                "FEES",    # ФСК-Россети
+                "MSNG",    # Мосэнерго
+                "UPRO",    # Юнипро
+                # ── Новые: ритейл/потребсектор ───────────────────────
+                "FIXP",    # Fix Price
+                "LENT",    # Лента
+                "DSKY",    # Детский мир (если ещё торгуется)
+                # ── Новые: IT/прочее ─────────────────────────────────
+                "SMLT",    # Самолёт (девелопер)
+                "CIAN",    # ЦИАН
             ]
         if self.mlp_hidden is None:
             self.mlp_hidden = [128, 64, 32]

@@ -6,6 +6,7 @@ visualize_dataset.py
 cache/
 eval_results.json
 *.npy
+_meta.json
 # Environment
 .env
 .env.*

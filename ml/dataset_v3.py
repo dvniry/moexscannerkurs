@@ -1,6 +1,12 @@
 # ml/dataset_v3.py
 """Мультимасштабный датасет v3 — самодостаточный (без зависимости от dataset.py).
 
+Изменения v3.2 (nan-guard):
+- __getitem__: nan_to_num на ohlc_y, imgs, nums, hourly
+- build_multiscale_dataset_v3: nan_to_num на ohlc сразу после build_ohlc_labels
+- add_indicators: защита от деления на ноль через clip(1e-9)
+- _build_hourly_windows: защита от nan в рендере
+
 Изменения v3.1 (consolidation):
 - add_indicators, load_imoex, INDICATOR_COLS, class_distribution перенесены сюда
 - from ml.dataset import ... полностью удалён
@@ -42,22 +48,14 @@ from ml.hourly_encoder import (
 # ══════════════════════════════════════════════════════════════════
 
 def _hwc_to_cw(img: np.ndarray) -> np.ndarray:
-    """Конвертирует рендер (H, W, C) → (C, W) mean-pool по оси H.
-
-    FactualBackbone использует Conv1d: ожидает (batch, C, T).
-    img: float32 (H, W, C) в диапазоне [0, 1]
-    return: float32 (C, W)
-    """
-    # img shape: (H, W, C) → mean по H → (W, C) → transpose → (C, W)
-    return img.mean(axis=0).T.astype(np.float32)   # (C=3, W=img_width)
+    """Конвертирует рендер (H, W, C) → (C, W) mean-pool по оси H."""
+    return img.mean(axis=0).T.astype(np.float32)
 
 
 # ══════════════════════════════════════════════════════════════════
-# Индикаторы (перенесены из dataset.py)
+# Индикаторы
 # ══════════════════════════════════════════════════════════════════
 
-# 30 признаков: тренд + осцилляторы + Bollinger + ATR + объём +
-# Фибоначчи + RS vs IMOEX + календарь
 INDICATOR_COLS = [
     "ema9", "ema21", "ema50", "macd", "macd_sig",
     "rsi", "rsi_pct", "stoch",
@@ -86,8 +84,9 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
 
     delta  = c.diff()
     gain   = delta.clip(lower=0).rolling(14).mean()
-    loss_s = (-delta.clip(upper=0)).rolling(14).mean()
-    df["rsi"]     = 100 - (100 / (1 + gain / loss_s.replace(0, 1e-9)))
+    # FIX v3.2: clip(lower=1e-9) вместо replace(0, 1e-9) — надёжнее
+    loss_s = (-delta.clip(upper=0)).rolling(14).mean().clip(lower=1e-9)
+    df["rsi"]     = 100 - (100 / (1 + gain / loss_s))
     rsi_min       = df["rsi"].rolling(50).min()
     rsi_max       = df["rsi"].rolling(50).max()
     df["rsi_pct"] = (df["rsi"] - rsi_min) / (rsi_max - rsi_min + 1e-9)
@@ -100,11 +99,13 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
 
     tr          = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     df["atr"]   = tr.rolling(14).mean()
-    df["range_norm"]      = (h - l) / (c + 1e-9)
-    df["range_atr_ratio"] = (h - l) / (df["atr"] + 1e-9)
+    # FIX v3.2: защита от нулевого close
+    c_safe = c.clip(lower=1e-9)
+    df["range_norm"]      = (h - l) / c_safe
+    df["range_atr_ratio"] = (h - l) / (df["atr"].clip(lower=1e-9))
 
     df["vol_ma"]         = v.rolling(20).mean()
-    df["vol_ratio"]      = v / (df["vol_ma"] + 1e-9)
+    df["vol_ratio"]      = v / (df["vol_ma"].clip(lower=1e-9))
     df["ret1"]           = c.pct_change()
     df["sent_vol_price"] = df["ret1"] * df["vol_ratio"]
 
@@ -117,14 +118,15 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
 
     roll_max           = c.rolling(30).max()
     roll_min           = c.rolling(30).min()
-    fib_range          = roll_max - roll_min
-    df["dist_fib_382"] = (c - (roll_max - 0.382 * fib_range)) / (fib_range + 1e-9)
-    df["dist_fib_618"] = (c - (roll_max - 0.618 * fib_range)) / (fib_range + 1e-9)
+    fib_range          = (roll_max - roll_min).clip(lower=1e-9)
+    df["dist_fib_382"] = (c - (roll_max - 0.382 * fib_range)) / fib_range
+    df["dist_fib_618"] = (c - (roll_max - 0.618 * fib_range)) / fib_range
 
     if imoex is not None:
         idx_c             = imoex["close"].astype(float).reindex(df.index).ffill()
-        df["rs_5d"]       = c.pct_change(5)  / (idx_c.pct_change(5).abs()  + 1e-9)
-        df["rs_20d"]      = c.pct_change(20) / (idx_c.pct_change(20).abs() + 1e-9)
+        # FIX v3.2: clip знаменатель RS чтобы не делить на 0
+        df["rs_5d"]       = c.pct_change(5)  / (idx_c.pct_change(5).abs().clip(lower=1e-9))
+        df["rs_20d"]      = c.pct_change(20) / (idx_c.pct_change(20).abs().clip(lower=1e-9))
         df["imoex_ret5"]  = idx_c.pct_change(5)
         df["imoex_ret20"] = idx_c.pct_change(20)
         df["imoex_vol20"] = idx_c.pct_change().rolling(20).std()
@@ -144,20 +146,70 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
     return df
 
 
-def load_imoex() -> "pd.DataFrame | None":
+def load_imoex() -> 'pd.DataFrame | None':
     from api.routes.candles import get_client
+    import time as _time
+    from datetime import timedelta
+    from t_tech.invest import Client, CandleInterval
+    from t_tech.invest.utils import now as _now
+
     client = get_client()
+    TARGET = "invest-public-api.tbank.ru:443"
+
     try:
         uid = client.find_indicative_uid("IMOEX")
-        if uid:
-            df = client.get_candles_by_uid(uid=uid, interval=CFG.interval, days_back=CFG.days_back)
-            if df is not None and not df.empty:
-                print(f"  IMOEX загружен: {len(df)} свечей")
-                return df
+        if not uid:
+            raise ValueError("UID для IMOEX не найден")
+
+        CHUNK_DAYS = 365
+        all_frames = []
+        end        = _now()
+        remaining  = CFG.days_back
+        chunk_num  = 0
+
+        while remaining > 0:
+            chunk = min(remaining, CHUNK_DAYS)
+            start = end - timedelta(days=chunk)
+            try:
+                with Client(client.token, target=TARGET) as api:
+                    candles = api.market_data.get_candles(
+                        instrument_id=uid,
+                        from_=start,
+                        to=end,
+                        interval=CandleInterval.CANDLE_INTERVAL_DAY,
+                    ).candles
+
+                if candles:
+                    df_chunk = pd.DataFrame({
+                        "time":   [cdl.time   for cdl in candles],
+                        "open":   [client._q(cdl.open)  for cdl in candles],
+                        "high":   [client._q(cdl.high)  for cdl in candles],
+                        "low":    [client._q(cdl.low)   for cdl in candles],
+                        "close":  [client._q(cdl.close) for cdl in candles],
+                        "volume": [cdl.volume for cdl in candles],
+                    }).set_index("time")
+                    all_frames.append(df_chunk)
+                chunk_num += 1
+
+            except Exception as e:
+                print(f"  [WARN] IMOEX chunk {start.date()}→{end.date()}: {e}")
+
+            end        = start
+            remaining -= chunk
+            _time.sleep(0.1)
+
+        if not all_frames:
+            raise ValueError("Ни один чанк IMOEX не загружен")
+
+        df = pd.concat(all_frames).sort_index()
+        df = df[~df.index.duplicated(keep='first')]
+        print(f"  IMOEX загружен: {len(df)} свечей ({chunk_num} чанков)")
+        return df
+
     except Exception as e:
         print(f"  [WARN] IMOEX: {e}")
-    print("  [WARN] IMOEX не загружен — RS признаки будут нулями")
-    return None
+        print("  [WARN] IMOEX не загружен — RS признаки будут нулями")
+        return None
 
 
 def class_distribution(y: np.ndarray) -> None:
@@ -254,7 +306,11 @@ def _build_hourly_for_day(hourly_by_date, daily_date, d_high, d_low, d_close):
     day_h = hourly_by_date.get(day)
     if day_h is None or len(day_h) == 0:
         return np.zeros((N_HOURLY_CHANNELS, N_HOURS_PER_DAY), dtype=np.float32)
-    return render_hourly_candles(day_h, d_close, d_high, d_low)
+    result = render_hourly_candles(day_h, d_close, d_high, d_low)
+    # FIX v3.2: защита от nan в часовом рендере
+    if not np.isfinite(result).all():
+        result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+    return result
 
 
 def _build_hourly_windows(hourly_df, daily_df, valid_indices):
@@ -280,6 +336,65 @@ def _build_hourly_windows(hourly_df, daily_df, valid_indices):
         results.append(np.stack(renders[-N_INTRADAY_DAYS:]))
     print()
     return np.array(results, dtype=np.float32)
+
+
+def _load_daily_candles_chunked(client, figi: str, days_back: int = None) -> pd.DataFrame:
+    """Загружает дневные свечи ЧАНКАМИ по 365 дней."""
+    import time as _time
+    from datetime import timedelta
+    from t_tech.invest import Client, CandleInterval
+    from t_tech.invest.utils import now as _now
+
+    if days_back is None:
+        days_back = CFG.days_back
+
+    CHUNK_DAYS = 365
+    TARGET     = "invest-public-api.tbank.ru:443"
+    all_frames = []
+    end        = _now()
+    remaining  = days_back
+    chunk_num  = 0
+
+    while remaining > 0:
+        chunk = min(remaining, CHUNK_DAYS)
+        start = end - timedelta(days=chunk)
+        try:
+            with Client(client.token, target=TARGET) as api:
+                candles = api.market_data.get_candles(
+                    figi=figi,
+                    from_=start,
+                    to=end,
+                    interval=CandleInterval.CANDLE_INTERVAL_DAY,
+                ).candles
+
+            if candles:
+                df_chunk = pd.DataFrame({
+                    "time":   [cdl.time   for cdl in candles],
+                    "open":   [client._q(cdl.open)  for cdl in candles],
+                    "high":   [client._q(cdl.high)  for cdl in candles],
+                    "low":    [client._q(cdl.low)   for cdl in candles],
+                    "close":  [client._q(cdl.close) for cdl in candles],
+                    "volume": [cdl.volume for cdl in candles],
+                }).set_index("time")
+                all_frames.append(df_chunk)
+            chunk_num += 1
+
+        except Exception as e:
+            print(f"  [WARN] daily chunk {start.date()}→{end.date()}: {e}")
+
+        end        = start
+        remaining -= chunk
+        _time.sleep(0.1)
+
+    if not all_frames:
+        print(f"  [WARN] Дневные свечи: ни один чанк не загружен")
+        return pd.DataFrame()
+
+    result = pd.concat(all_frames).sort_index()
+    result = result[~result.index.duplicated(keep='first')]
+    print(f"  Дневные свечи загружены: {len(result)} свечей "
+          f"({chunk_num} чанков, {days_back} дней)")
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -324,20 +439,46 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         data = self._load(ticker)
         n = data["_n"]; local_idx = min(local_idx, n - 1)
 
-        # imgs[W] хранится как (N, C=3, img_width) — уже готово для Conv1d
         imgs = {W: torch.tensor(data[W][local_idx]).float() for W in SCALES}
         nums = ({W: torch.tensor(data[f"num_{W}"][local_idx]).float() for W in SCALES}
                 if data[f"num_{SCALES[0]}"] is not None else None)
         cls_y  = int(data["cls"][local_idx])
-        ohlc_y = torch.tensor(data["ohlc"][local_idx]).float()
+
+        # FIX v3.2: nan/inf guard на ohlc_y — главный источник NaN loss
+        ohlc_raw = data["ohlc"][local_idx]
+        if not np.isfinite(ohlc_raw).all():
+            ohlc_raw = np.nan_to_num(ohlc_raw, nan=0.0, posinf=0.0, neginf=0.0)
+        ohlc_y = torch.tensor(ohlc_raw).float()
+
+        # FIX v3.2: nan/inf guard на imgs
+        for W in SCALES:
+            if not torch.isfinite(imgs[W]).all():
+                imgs[W] = torch.nan_to_num(imgs[W], nan=0.0, posinf=0.0, neginf=0.0)
+
+        # FIX v3.2: nan/inf guard на nums
+        if nums is not None:
+            for W in SCALES:
+                if not torch.isfinite(nums[W]).all():
+                    nums[W] = torch.nan_to_num(nums[W], nan=0.0, posinf=1.0, neginf=0.0)
+
         ctx_arr = data["ctx"]
-        ctx_idx = min(local_idx, len(ctx_arr) - 1) if ctx_arr is not None else 0
-        ctx = (torch.tensor(ctx_arr[ctx_idx]).float() if ctx_arr is not None
-               else torch.zeros(self.ctx_dim))
+        if ctx_arr is not None and len(ctx_arr) > 0:
+            ctx_idx = min(local_idx, len(ctx_arr) - 1)
+            ctx = torch.tensor(ctx_arr[ctx_idx]).float()
+            if not torch.isfinite(ctx).all():
+                ctx = torch.nan_to_num(ctx, nan=0.0, posinf=0.0, neginf=0.0)
+        else:
+            ctx_dim_fallback = self.ctx_dim if self.ctx_dim > 0 else 1
+            ctx = torch.zeros(ctx_dim_fallback)
+
         if self.use_hourly and data["hourly"] is not None:
             hourly = torch.tensor(data["hourly"][local_idx]).float()
+            # FIX v3.2: nan/inf guard на hourly
+            if not torch.isfinite(hourly).all():
+                hourly = torch.nan_to_num(hourly, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             hourly = torch.zeros(N_INTRADAY_DAYS, N_HOURLY_CHANNELS, N_HOURS_PER_DAY)
+
         return imgs, nums, cls_y, ohlc_y, ctx, hourly
 
 
@@ -347,14 +488,9 @@ class LazyMultiScaleDatasetV3(TorchDataset):
 
 def build_multiscale_dataset_v3(
     df, imoex=None, context=None, ticker: str = "unknown",
-    hourly_df: pd.DataFrame = None, force_rebuild: bool = False,
+    hourly_df: pd.DataFrame = None, force_rebuild: bool = False, 
 ) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray],
            np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
-    """Возвращает: (imgs, nums, cls_labels, ohlc_labels, ctx, hourly)
-
-    imgs[W]: shape (N, C=3, img_width)  ← Conv1d-совместимый формат
-    nums[W]: shape (N, window=W, n_indicators=30)
-    """
     df = add_indicators(df.copy(), imoex).dropna()
     W_max = max(SCALES); F = CFG.future_bars
 
@@ -375,11 +511,17 @@ def build_multiscale_dataset_v3(
 
         # ── Авто-миграция старого кэша (H, W, C) → (C, W) ──────────
         for W in SCALES:
-            if imgs[W].ndim == 4:  # старый формат (N, H, img_W, C)
+            if imgs[W].ndim == 4:
                 print(f"  [migrate] {ticker} W={W}: (N,H,W,C) → (N,C,W)")
                 imgs[W] = np.stack([_hwc_to_cw(imgs[W][i]) for i in range(len(imgs[W]))])
                 np.save(_img_path(ticker, W), imgs[W])
-        # ────────────────────────────────────────────────────────────
+
+        # FIX v3.2: санация кэшированного ohlc
+        nan_count = (~np.isfinite(ohlc)).sum()
+        if nan_count > 0:
+            print(f"  [FIX] {ticker}: ohlc кэш содержит {nan_count} nan/inf → заменяем нулями")
+            ohlc = np.nan_to_num(ohlc, nan=0.0, posinf=0.0, neginf=0.0)
+            np.save(_ohlc_path(ticker), ohlc)
 
         ctx_list = []
         if context is not None:
@@ -388,32 +530,47 @@ def build_multiscale_dataset_v3(
         imgs, nums, cls, ohlc, ctx, hourly = _align_arrays(imgs, nums, cls, ohlc, ctx, hourly)
         return imgs, nums, cls, ohlc, ctx, hourly
 
-    ohlc_all, cls_all, valid_all = build_ohlc_labels(df)
+    ohlc_all, cls_all, valid_all, _atr_ratio = build_ohlc_labels(df)
+
+    # FIX v3.2: санируем ohlc_all сразу после build_ohlc_labels
+    # Это главный источник nan — ATR=0 на выходных или первых барах
+    nan_before = (~np.isfinite(ohlc_all)).sum()
+    if nan_before > 0:
+        print(f"  [FIX] {ticker}: build_ohlc_labels вернул {nan_before} nan/inf "
+              f"из {len(ohlc_all)} → заменяем нулями и инвалидируем метки")
+        # Инвалидируем соответствующие valid-флаги чтобы не учить на мусоре
+        for i in range(len(ohlc_all)):
+            if not np.isfinite(ohlc_all[i]).all():
+                valid_all[i] = False
+        ohlc_all = np.nan_to_num(ohlc_all, nan=0.0, posinf=0.0, neginf=0.0)
 
     scale_imgs = {W: [] for W in SCALES}
     scale_nums = {W: [] for W in SCALES}
     ctx_list = []; y_cls_list = []; y_ohlc_list = []; valid_daily_indices = []
 
     num_arr  = df[INDICATOR_COLS].values.astype(np.float32)
-    num_norm = (num_arr - num_arr.min(0, keepdims=True)) / \
-               (num_arr.max(0, keepdims=True) - num_arr.min(0, keepdims=True) + 1e-9)
+    _col_min = np.nanmin(num_arr, axis=0, keepdims=True)
+    _col_max = np.nanmax(num_arr, axis=0, keepdims=True)
+    num_norm = (num_arr - _col_min) / (_col_max - _col_min + 1e-9)
+    num_norm = np.nan_to_num(num_norm, nan=0.0, posinf=1.0, neginf=0.0)
 
     total = len(df) - W_max - F
     for i, idx in enumerate(range(W_max, len(df) - F)):
         if not valid_all[idx]: continue
         if i % 100 == 0: print(f"  {ticker}: рендер v3 {i}/{total}", end="\r")
         for W in SCALES:
-            # render_candles → (H, W_img, C=3) → _hwc_to_cw → (C=3, W_img)
-            img_hwc = render_candles(df.iloc[idx - W : idx])   # (H, W_img, 3)
-            scale_imgs[W].append(_hwc_to_cw(img_hwc))          # (3, W_img)
-            scale_nums[W].append(num_norm[idx - W : idx])      # (W, n_ind)
+            img_hwc = render_candles(df.iloc[idx - W : idx])
+            img_cw  = _hwc_to_cw(img_hwc)
+            # FIX v3.2: защита от nan в рендере свечей
+            if not np.isfinite(img_cw).all():
+                img_cw = np.nan_to_num(img_cw, nan=0.0, posinf=0.0, neginf=0.0)
+            scale_imgs[W].append(img_cw)
+            scale_nums[W].append(num_norm[idx - W : idx])
         if context is not None: ctx_list.append(context[idx])
         y_cls_list.append(cls_all[idx]); y_ohlc_list.append(ohlc_all[idx])
         valid_daily_indices.append(idx)
     print()
 
-    # imgs[W]: (N, C=3, img_width)   ← Conv1d ready
-    # nums[W]: (N, window, n_indicators)
     imgs   = {W: np.array(scale_imgs[W], dtype=np.float32) for W in SCALES}
     nums   = {W: np.array(scale_nums[W], dtype=np.float32) for W in SCALES}
     cls    = np.array(y_cls_list,  dtype=np.int64)
@@ -441,31 +598,75 @@ def build_multiscale_dataset_v3(
 # ══════════════════════════════════════════════════════════════════
 
 def build_full_multiscale_dataset_v3(
-    force_rebuild: bool = False, use_hourly: bool = True
+    force_rebuild: bool = False, use_hourly: bool = True, ticker_filter: Optional[list[str]] = None,
 ):
-    """Загружает все тикеры, строит LazyMultiScaleDatasetV3.
-
-    Returns: (dataset, y_all, ctx_dim, ticker_lengths)
-    """
     from api.routes.candles import get_client
+    from ml.cache_manager import (
+        _load_meta, _save_meta,
+        ticker_cache_valid, probe_freshness, update_meta,
+    )
     client = get_client()
+    imoex  = load_imoex()
+    meta   = _load_meta()
 
-    print("  Загружаем IMOEX...")
-    imoex = load_imoex()
+    all_cached = all(ticker_cache_valid(t, meta) for t in CFG.tickers)
+
+    if all_cached and not force_rebuild:
+        print("  Все тикеры в кэше. Запускаем probe-проверку актуальности...")
+        cache_fresh = probe_freshness(client, CFG.tickers, meta)
+        if cache_fresh:
+            print("  ✓ Кэш актуален — пропускаем скачивание, загружаем из файлов")
+            return _load_all_from_cache(meta, use_hourly=use_hourly)
+        else:
+            print("  Кэш устарел — обновляем только изменившиеся тикеры")
 
     records = []; all_cls = []; ctx_dim = None; ticker_lengths = []
 
-    for ticker in CFG.tickers:
-        print(f"  Загружаем {ticker}...")
+    tickers_to_use = (
+        CFG.tickers
+        if ticker_filter is None
+        else [t for t in CFG.tickers if t in ticker_filter]
+    )
+    if not tickers_to_use:
+        raise RuntimeError(f"ticker_filter={ticker_filter} не совпал ни с одним из CFG.tickers")
+
+    for ticker in tickers_to_use:
+        if not force_rebuild and ticker_cache_valid(ticker, meta):
+            print(f"  {ticker}: кэш актуален, пропускаем скачивание ✓")
+            cls = np.load(_cls_path(ticker), mmap_mode="r")
+
+            # FIX v3.2: санируем ohlc при загрузке из кэша
+            ohlc_p = _ohlc_path(ticker)
+            if os.path.exists(ohlc_p):
+                ohlc_cached = np.load(ohlc_p, mmap_mode="r")
+                nan_cnt = (~np.isfinite(ohlc_cached)).sum()
+                if nan_cnt > 0:
+                    print(f"  [FIX] {ticker}: кэш ohlc содержит {nan_cnt} nan/inf → перезаписываем")
+                    ohlc_fixed = np.nan_to_num(np.array(ohlc_cached),
+                                               nan=0.0, posinf=0.0, neginf=0.0)
+                    np.save(ohlc_p, ohlc_fixed)
+
+            n = len(cls)
+            for local_idx in range(n):
+                records.append((ticker, local_idx))
+            all_cls.append(cls)
+            ticker_lengths.append((ticker, n))
+            cp = _ctx_path(ticker)
+            if os.path.exists(cp) and ctx_dim is None:
+                ctx_dim = np.load(cp, mmap_mode="r").shape[1]
+            continue
+
+        print(f"  Загружаем {ticker} из API...")
         try:
             figi = client.find_figi(ticker)
             if not figi: continue
-            df = client.get_candles(figi=figi, interval=CFG.interval, days_back=CFG.days_back)
-            if df is None or df.empty: continue
+
+            df = _load_daily_candles_chunked(client, figi, days_back=CFG.days_back)
+            if df is None or df.empty:
+                continue
 
             hourly_df = _load_hourly_candles(client, figi) if use_hourly else None
 
-            print(f"  Контекст для {ticker}...")
             ctx_series = load_context_series(ticker)
             ctx_feats  = build_context_features(
                 ctx_series, df.index, ticker=ticker,
@@ -478,17 +679,24 @@ def build_full_multiscale_dataset_v3(
             )
             if len(cls) == 0: continue
 
-            ctx_p = _ctx_path(ticker)
-            if ctx is not None:
-                np.save(ctx_p, ctx)
-                if ctx_dim is None: ctx_dim = ctx.shape[1]
-            elif ctx_dim is not None:
-                np.save(ctx_p, np.zeros((len(cls), ctx_dim), dtype=np.float32))
+            # ↓ ДОБАВИТЬ: сохраняем ctx на диск
+            if ctx is not None and len(ctx) > 0:
+                np.save(_ctx_path(ticker), ctx)
+                print(f"  {ticker}: ctx сохранён, shape={ctx.shape}")
+
+            update_meta(ticker, df, len(cls), meta)
+            _save_meta(meta)
+
+            cp = _ctx_path(ticker)
+            from ml.context_loader import get_context_dim
+            ctx_dim = get_context_dim(ticker)
 
             for local_idx in range(len(cls)):
                 records.append((ticker, local_idx))
-            all_cls.append(cls); ticker_lengths.append((ticker, len(cls)))
-            print(f"  {ticker}: {len(cls)} сэмплов")
+            all_cls.append(cls)
+            ticker_lengths.append((ticker, len(cls)))
+            print(f"  {ticker}: {len(cls)} сэмплов ✓")
+
         except Exception as e:
             print(f"  {ticker}: ошибка — {e}"); traceback.print_exc()
 
@@ -496,6 +704,29 @@ def build_full_multiscale_dataset_v3(
     ctx_dim = ctx_dim or 0
     y_all   = np.concatenate(all_cls)
     dataset = LazyMultiScaleDatasetV3(records, ctx_dim, use_hourly=use_hourly)
+    return dataset, y_all, ctx_dim, ticker_lengths
+
+
+def _load_all_from_cache(meta: dict, use_hourly: bool = True):
+    """Мгновенная загрузка когда весь кэш актуален — без API."""
+    records = []; all_cls = []; ctx_dim = None; ticker_lengths = []
+    for ticker in CFG.tickers:
+        cp  = _cls_path(ticker)
+        if not os.path.exists(cp): continue
+        cls = np.load(cp, mmap_mode="r")
+        n   = len(cls)
+        for local_idx in range(n):
+            records.append((ticker, local_idx))
+        all_cls.append(cls)
+        ticker_lengths.append((ticker, n))
+        ctx_p = _ctx_path(ticker)
+        if os.path.exists(ctx_p) and ctx_dim is None:
+            ctx_dim = np.load(ctx_p, mmap_mode="r").shape[1]
+    ctx_dim = ctx_dim or 0
+    y_all   = np.concatenate(all_cls)
+    dataset = LazyMultiScaleDatasetV3(records, ctx_dim, use_hourly=use_hourly)
+    print(f"  ✓ Загружено из кэша: {len(records)} сэмплов, "
+          f"{len(ticker_lengths)} тикеров")
     return dataset, y_all, ctx_dim, ticker_lengths
 
 
@@ -509,10 +740,6 @@ def temporal_split(
     test_ratio:  float = 0.15,
     purge_bars:  int   = None,
 ) -> tuple:
-    """Temporal split с purge gap — для каждого тикера отдельно.
-
-    Возвращает: (idx_train, idx_val, idx_test) — глобальные индексы.
-    """
     if purge_bars is None: purge_bars = CFG.future_bars
     idx_train = []; idx_val = []; idx_test = []
     global_offset = 0
