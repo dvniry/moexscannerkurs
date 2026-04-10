@@ -1,26 +1,36 @@
 # ml/trainer_v3.py
-"""Trainer v3.12 — AMP ОТКЛЮЧЁН полностью.
+"""Trainer v3.13 — Улучшение обобщения без утечки будущего.
 
-Изменения v3.12:
+Изменения v3.13:
 
-FIX 1 (КРИТИЧЕСКИЙ): AMP GradScaler отключён (scaler = None всегда).
-  Причина: scaler.unscale_() записывает found_inf=True до нашего _sanitize_grads.
-  scaler.step() видит found_inf → пропускает шаг → scale /= 2 каждый раз.
-  За 3 эпохи × 190 bad events → scale → ~0 → unscale = ×(1/~0) → все грады inf
-  → _sanitize_grads зануляет всё → grad_norm=0.000 навсегда.
-  Решение: float32 везде, clip_grad_norm_ сам справится с большими градиентами.
+FIX 1: Embargo × 3 (purge_bars = future_bars * 3).
+  Было: purge_bars = future_bars (5 баров ≈ 1 торговый день).
+  Стало: purge_bars = future_bars * 3 (15 баров ≈ 3 дня).
+  Причина: на MOEX тикеры одного сектора (нефть, банки) движутся синхронно.
+  Без embargo модель видела похожие паттерны в train и val в разных тикерах
+  → эффективная утечка через корреляцию.
 
-FIX 2: Убран _sanitize_grads — больше не нужен без AMP.
-  Без AMP большие (но конечные) грады просто клипируются.
-  NaN грады из BiLSTM обрабатываются через nan_to_num в модели (v3.9+).
+FIX 2: TemporalBalancedSampler.
+  Каждый батч = равные доли из каждого тикера.
+  Было: random shuffle → один батч мог содержать 80% одного тикера/периода.
+  Стало: модель не может «запомнить» паттерны конкретного эмитента.
 
-FIX 3: Упрощён dead-gradient recovery (DEAD_STREAK_LIMIT=50).
-  Без AMP collapse-спирали нет, 50 нулевых шагов = реальная проблема.
+FIX 3: OHLCVAugment в цикле обучения.
+  amplitude_jitter + volatility_swap + num_jitter — только для истории.
+  Метки (cls_y, ohlc_y) не трогаются — они из будущего.
+  Применяется с torch.no_grad() чтобы не строить лишний граф.
 
-FIX 4: Добавлен per-module clip для BiLSTM (max_norm=1.0).
-  BiLSTM — источник 19 bad-grad param tensors. Клипируем отдельно.
+FIX 4: temporal_cutmix вместо mixup_data.
+  Вырезает сегмент из исторического окна одного сэмпла и вставляет в другой.
+  Форма вставки сохраняет временной порядок — нет «телепортации» бара из будущего.
 
-FIX 5: Добавлен [SCALE] лог — печатает текущий LR cls_head каждые 200 шагов.
+FIX 5: Понижен mixup_alpha 0.4 → 0.25.
+  Высокий alpha смешивал метки слишком агрессивно → модель видела
+  «SELL на 60% + BUY на 40%» как лёгкий пример; снижение усиливает сигнал.
+
+FIX 6: gamma_per_class (1.0,1.0,1.0) → (2.0,1.0,1.5).
+  UP-класс получает больший фокус (recall UP был 0.23).
+  DOWN немного усиливается; HOLD оставляем без изменений.
 """
 import os
 os.environ['GRPC_DNS_RESOLVER'] = 'native'
@@ -76,36 +86,38 @@ def _pretrain_mae(model, tr_loader, device, n_epochs=5, mask_ratio=0.3, lr=5e-4)
 
 
 def _init_cls_head(model):
-    """Xavier для 2D weights (Linear), zeros для bias.
-    1D weights (LayerNorm.weight) НЕ трогаем — оставляем ones по умолчанию.
-    """
     for name, p in model.named_parameters():
         if 'cls_head' in name:
             if 'weight' in name and p.dim() >= 2:
                 nn.init.xavier_uniform_(p, gain=0.1)
             elif 'bias' in name:
                 nn.init.zeros_(p)
-            # 1D weight → LayerNorm.weight, оставляем = ones
             print(f"  [Init] cls_head init: {name}  shape={list(p.shape)}")
 
 
 def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 criterion, device, n_epochs, patience_limit,
                 save_path, phase_name, ctx_dim, use_hourly,
-                accum_steps=2, use_mixup=True, mixup_alpha=0.2):
-    from ml.multiscale_cnn_v3 import mixup_data
+                accum_steps=2, use_mixup=True, mixup_alpha=0.25):
+    from ml.multiscale_cnn_v3 import temporal_cutmix, OHLCVAugment
     from sklearn.metrics import f1_score
 
     best_metric = 0.0; patience = 0
-    # FIX v3.12: AMP ОТКЛЮЧЁН — scaler = None всегда
-    scaler = None
+    scaler      = None  # AMP отключён
 
-    # Dead gradient recovery state
     DEAD_STREAK_LIMIT = 50
     zero_grad_streak  = 0
 
+    # FIX v3.13: аугментатор истории — создаём один раз, используем в каждом батче
+    # Важно: augmenter меняет только imgs/nums (история), не cls_y/ohlc_y (будущее)
+    augmenter = OHLCVAugment(
+        amplitude_sigma=0.015,
+        vol_range=(0.75, 1.25),
+        num_jitter_sigma=0.008,
+        p=0.45,
+    )
+
     def _reset_cls_head_full(opt):
-        """Сброс весов И optimizer state для cls_head."""
         with torch.no_grad():
             for name, p in model.named_parameters():
                 if 'cls_head' in name:
@@ -116,7 +128,6 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                     opt.state.pop(p, None)
         print(f"  [RECOVERY] Dead gradient → reset cls_head + optimizer state")
 
-    # Собираем ссылки на BiLSTM params для per-module clip
     bilstm_params = []
     for name, module in model.named_modules():
         if isinstance(module, nn.LSTM):
@@ -138,40 +149,41 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
             hourly_t = (hourly_data.to(device) if (use_hourly and hourly_data is not None) else None)
             nums     = ({W: num_dict[W].to(device) for W in SCALES} if num_dict is not None else None)
 
-            # ── DBG первый батч ───────────────────────────────────────
+            # ── DBG первый батч ───────────────────────────────────────────
             if epoch==1 and step==1:
-                print("\n  [DBG] ── Диагностика первого батча ──")
+                print("\n  [DBG] ── Диагностика первого батча (v3.13) ──")
                 for W,t in imgs.items():
                     print(f"  [DBG] imgs[{W}]: shape={t.shape} nan={torch.isnan(t).any().item()} "
-                          f"inf={torch.isinf(t).any().item()} min={t.min():.3f} max={t.max():.3f}")
+                          f"min={t.min():.3f} max={t.max():.3f}")
                 if nums:
                     for W,t in nums.items():
-                        print(f"  [DBG] nums[{W}]: nan={torch.isnan(t).any().item()} inf={torch.isinf(t).any().item()}")
+                        print(f"  [DBG] nums[{W}]: nan={torch.isnan(t).any().item()}")
                 print(f"  [DBG] cls_y:  unique={cls_y.unique().tolist()}")
-                print(f"  [DBG] ohlc_y: nan={torch.isnan(ohlc_y).any().item()} min={ohlc_y.min():.3f} max={ohlc_y.max():.3f}")
-                if ctx_t is not None: print(f"  [DBG] ctx:   shape={ctx_t.shape}")
-                else: print(f"  [DBG] ctx:   None (ctx_dim={ctx_dim})")
+                print(f"  [DBG] ohlc_y: nan={torch.isnan(ohlc_y).any().item()} "
+                      f"min={ohlc_y.min():.3f} max={ohlc_y.max():.3f}")
+                if ctx_t is not None: print(f"  [DBG] ctx:    shape={ctx_t.shape}")
                 if hourly_t is not None: print(f"  [DBG] hourly: shape={hourly_t.shape}")
                 with torch.no_grad():
-                    lo_d,op_d = model(imgs,nums,ctx_t,hourly=hourly_t)
-                    lo_d = lo_d.float().clamp(-15.,15.).nan_to_num(0.)
-                print(f"  [DBG] logits: nan={torch.isnan(lo_d).any().item()} min={lo_d.min():.3f} max={lo_d.max():.3f}")
-                print(f"  [DBG] ohlc_out: nan={torch.isnan(op_d).any().item()} min={op_d.min():.3f} max={op_d.max():.3f}")
-                nan_p = [n for n,p in model.named_parameters() if torch.isnan(p).any()]
-                print("  [DBG] Веса модели: " + ("ОК (нет NaN)" if not nan_p else f"⚠ NaN в {nan_p[:5]}"))
-                w = next((getattr(criterion,a) for a in dir(criterion) if 'weight' in a.lower()
-                          and isinstance(getattr(criterion,a,None),torch.Tensor)), '??')
-                print(f"  [DBG] cls_weight: {w}")
-                with torch.no_grad():
-                    l,lc,lr2 = criterion(lo_d,cls_y,op_d.float(),ohlc_y.float())
-                print(f"  [DBG] loss={l.item():.4f} cls={lc.item():.4f} reg={lr2.item():.4f}")
-                print(f"  [DBG] AMP: ОТКЛЮЧЁН (float32 everywhere)")
-                print("  [DBG] ───────────────────────────────────\n")
+                    lo_d, op_d = model(imgs, nums, ctx_t, hourly=hourly_t)
+                    lo_d = lo_d.float().clamp(-15., 15.).nan_to_num(0.)
+                print(f"  [DBG] logits:    nan={torch.isnan(lo_d).any().item()} "
+                      f"min={lo_d.min():.3f} max={lo_d.max():.3f}")
+                print(f"  [DBG] AMP: ОТКЛЮЧЁН (float32)")
+                print(f"  [DBG] Augmenter: p={augmenter.p}  "
+                      f"vol_range={augmenter.vol_range}")
+                print("  [DBG] ──────────────────────────────────────────\n")
 
-            effective_alpha = mixup_alpha if use_mixup else 0.0  # anti-overfit: mixup с e=1
+            # ── FIX v3.13: аугментация истории (torch.no_grad — не строим граф) ──
+            # ГАРАНТИЯ: cls_y и ohlc_y не трогаются — они из будущего
+            with torch.no_grad():
+                imgs, nums = augmenter(imgs, nums)
+
+            effective_alpha = mixup_alpha if use_mixup else 0.0
 
             if use_mixup and effective_alpha > 0:
-                m_imgs,m_nums,cls_a,cls_b,m_ohlc,m_ctx,lam,m_hourly = mixup_data(
+                # FIX v3.13: temporal_cutmix вместо mixup_data
+                # Срез [cut_start:cut_start+cut_len] — только история, не будущее
+                m_imgs,m_nums,cls_a,cls_b,m_ohlc,m_ctx,lam,m_hourly = temporal_cutmix(
                     imgs,nums,cls_y,ohlc_y.float(),ctx_t,effective_alpha,hourly=hourly_t)
                 lo,op = model(m_imgs,m_nums,m_ctx,hourly=m_hourly)
                 lo = lo.float().clamp(-15.,15.).nan_to_num(nan=0.,posinf=15.,neginf=-15.)
@@ -191,20 +203,16 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
 
             (loss/accum_steps).backward()
             _last_lo=lo.detach(); _last_cls_y=cls_y.detach()
-
             total_cls += lcls.item(); total_reg += lreg.item(); n_steps += 1
 
             if step % accum_steps == 0 or step == len(tr_loader):
                 trainable   = [p for g in optimizer.param_groups for p in g['params'] if p.requires_grad]
                 cls_head_ps = list(model.cls_head.parameters())
 
-                # FIX v3.12: per-module clip BiLSTM (источник 19 bad params)
                 if bilstm_params:
                     nn.utils.clip_grad_norm_(bilstm_params, max_norm=1.0)
-                # Per-module clip cls_head
                 nn.utils.clip_grad_norm_(cls_head_ps, max_norm=0.2)
-                # Global clip
-                grad_norm = nn.utils.clip_grad_norm_(trainable, 1.0)
+                grad_norm = nn.utils.clip_grad_norm_(trainable, 2.0)
 
                 if step % 100 == 0:
                     cls_gn = sum(p.grad.norm().item()**2 for p in cls_head_ps
@@ -216,13 +224,12 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 scheduler.step()
                 optimizer.zero_grad()
 
-                # Dead gradient recovery
                 gn = float(grad_norm)
                 if gn < 1e-7:
                     zero_grad_streak += 1
                     if zero_grad_streak >= DEAD_STREAK_LIMIT:
                         _reset_cls_head_full(optimizer)
-                        zero_grad_streak = -100  # cooldown
+                        zero_grad_streak = -100
                 else:
                     if zero_grad_streak < 0: zero_grad_streak += 1
                     else: zero_grad_streak = 0
@@ -234,7 +241,6 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                     _pt   = [_probs[_last_cls_y==c,c].mean().item() if (_last_cls_y==c).any() else -1. for c in range(3)]
                     _dist = [(_pred_cls==c).float().mean().item() for c in range(3)]
                     _tr_acc = (_pred_cls==_last_cls_y).float().mean().item()
-                    # FIX v3.12: логируем текущий LR cls_head
                     cls_lr = next((g['lr'] for g in optimizer.param_groups if g.get('name')=='cls_head'), 0.0)
                 print(f"  [FOCAL] e={epoch} s={step} "
                       f"pt: BUY={_pt[0]:.3f} HOLD={_pt[1]:.3f} SELL={_pt[2]:.3f} | "
@@ -282,7 +288,8 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
 def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
           force_rebuild=False, do_pretrain=True, pretrain_epochs=5):
     from ml.dataset_v3 import build_full_multiscale_dataset_v3, temporal_split
-    from ml.multiscale_cnn_v3 import MultiScaleHybridV3, MultiTaskLossV3, _make_loader_v3
+    from ml.multiscale_cnn_v3 import (MultiScaleHybridV3, MultiTaskLossV3,
+                                       _make_loader_v3, TemporalBalancedSampler)
     from torch.utils.data import Subset
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -295,16 +302,59 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
         force_rebuild=force_rebuild, use_hourly=use_hourly)
     print(f"  Всего сэмплов: {len(y_all)}, ctx_dim={ctx_dim}")
 
+    # FIX v3.13: embargo × 3 — защита от утечки через секторальную корреляцию MOEX
+    # future_bars баров ≈ 1 день → × 3 ≈ 3 торговых дня зазор между train/val
+    embargo = CFG.future_bars * 3
+    print(f"  [Embargo] purge_bars={embargo} (= future_bars×3 = {CFG.future_bars}×3)")
     idx_tr, idx_val, idx_test = temporal_split(
-        ticker_lengths, val_ratio=0.15, test_ratio=0.15, purge_bars=CFG.future_bars)
+        ticker_lengths, val_ratio=0.15, test_ratio=0.15, purge_bars=embargo)
     y_tr=y_all[idx_tr]; y_val=y_all[idx_val]; y_test=y_all[idx_test]
     print(f"  Train: {len(y_tr)}  Val: {len(y_val)}  Test: {len(y_test)}")
     print("  Распределение (все):"); class_distribution(y_all)
     print("  Распределение (train):"); class_distribution(y_tr)
 
-    tr_loader  = _make_loader_v3(Subset(dataset, idx_tr.tolist()),  CFG.batch_size, shuffle=True)
-    val_loader = _make_loader_v3(Subset(dataset, idx_val.tolist()), CFG.batch_size, shuffle=False)
-    te_ds      = Subset(dataset, idx_test.tolist())
+    # FIX v3.13: TemporalBalancedSampler
+    # Строим маппинг ticker → LOCAL индексы в tr_subset
+    # LOCAL = позиция в Subset (0..len(idx_tr)-1), не глобальный индекс датасета
+    tr_loader = None
+    try:
+        idx_tr_list  = idx_tr.tolist()
+        idx_to_local = {gi: li for li, gi in enumerate(idx_tr_list)}
+        ticker_to_local_idx = {}
+        offset = 0
+        for t_idx, entry in enumerate(ticker_lengths):
+            # ticker_lengths может быть list[int] или list[(name, int)]
+            n = entry if isinstance(entry, int) else int(entry[1])
+            name = f'ticker_{t_idx}' if isinstance(entry, int) else str(entry[0])
+            local_inds = [idx_to_local[gi]
+                          for gi in range(offset, offset + n)
+                          if gi in idx_to_local]
+            min_samples = max(4, CFG.batch_size // 8)
+            if len(local_inds) >= min_samples:
+                ticker_to_local_idx[name] = local_inds
+            offset += n
+
+        if len(ticker_to_local_idx) > 1:
+            sampler = TemporalBalancedSampler(
+                ticker_to_local_idx, CFG.batch_size, drop_last=True)
+            tr_loader = _make_loader_v3(
+                Subset(dataset, idx_tr_list), CFG.batch_size,
+                shuffle=False, sampler=sampler)
+            print(f"  [Sampler] TemporalBalancedSampler: "
+                  f"{len(ticker_to_local_idx)} тикеров, "
+                  f"per_group≈{sampler.per_group}")
+        else:
+            print("  [Sampler] Мало тикеров → стандартный shuffle")
+    except Exception as e:
+        print(f"  [Sampler] Ошибка при построении: {e} → стандартный shuffle")
+
+    if tr_loader is None:
+        tr_loader = _make_loader_v3(
+            Subset(dataset, idx_tr.tolist()), CFG.batch_size, shuffle=True)
+
+    val_loader = _make_loader_v3(
+        Subset(dataset, idx_val.tolist()), CFG.batch_size, shuffle=False)
+    te_ds = Subset(dataset, idx_test.tolist())
 
     model = MultiScaleHybridV3(ctx_dim=ctx_dim, n_indicator_cols=30,
                                 future_bars=CFG.future_bars, use_hourly=use_hourly).to(device)
@@ -316,13 +366,18 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
     cls_weights = torch.tensor([w/max_w*3. for w in raw_w], dtype=torch.float32).to(device)
     print(f"  Class weights: BUY={cls_weights[0]:.3f}  HOLD={cls_weights[1]:.3f}  SELL={cls_weights[2]:.3f}")
 
+    # FIX v3.13: gamma_per_class повышен для UP (recall был 0.23) и немного для DOWN
     criterion = MultiTaskLossV3(
-        cls_weight=cls_weights, gamma_per_class=(1.0,1.0,1.0),  # anti-overfit: 1.5→1.0
-        label_smoothing=0.15, huber_delta=0.5,  # anti-overfit: ls 0.10→0.15
-        direction_weight=0.3, reg_loss_weight=0.10).to(device)
+        cls_weight=cls_weights,
+        gamma_per_class=(2.0, 1.0, 1.5),   # было (1.0,1.0,1.0) в v3.12
+        label_smoothing=0.12,               # немного снижено: 0.15→0.12
+        huber_delta=0.5,
+        direction_weight=0.3,
+        reg_loss_weight=0.10).to(device)
 
     if do_pretrain:
-        _pretrain_mae(model, tr_loader, device, n_epochs=pretrain_epochs, mask_ratio=0.30, lr=3e-4)
+        _pretrain_mae(model, tr_loader, device, n_epochs=pretrain_epochs,
+                      mask_ratio=0.30, lr=3e-4)
 
     print("\n  [Phase-1] Full training, layer-wise LR decay")
     max_lr = 3e-4
@@ -334,32 +389,38 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
     crit_params  = list(criterion.parameters())
 
     param_groups = [
-        {'params': list(model.backbone.parameters()), 'lr': max_lr*0.15, 'name': 'backbone'},
-        {'params': list(model.cls_head.parameters()), 'lr': max_lr*0.5,  'name': 'cls_head'},
+        {'params': list(model.backbone.parameters()),
+         'lr': max_lr*0.15, 'weight_decay': 5e-4, 'name': 'backbone'},
+        {'params': list(model.cls_head.parameters()),
+         'lr': max_lr*0.5,  'weight_decay': 1e-4, 'name': 'cls_head'},
         {'params': [p for p in model.parameters() if p.requires_grad
                     and id(p) not in backbone_ids and id(p) not in hourly_ids
-                    and id(p) not in cls_head_ids], 'lr': max_lr, 'name': 'other'},
+                    and id(p) not in cls_head_ids],
+         'lr': max_lr, 'weight_decay': 5e-3, 'name': 'other'},
     ]
     if hourly_ids:
-        param_groups.insert(2, {'params': list(model.hourly_enc.parameters()),
-                                'lr': max_lr*0.1, 'name': 'hourly'})
+        param_groups.insert(2, {
+            'params': list(model.hourly_enc.parameters()),
+            'lr': max_lr*0.1, 'weight_decay': 5e-4, 'name': 'hourly'})
 
-    optimizer = AdamW(param_groups + [{'params': crit_params, 'lr': max_lr, 'name': 'criterion'}],
-                      weight_decay=5e-3)  # anti-overfit: 1e-3→5e-3
+    optimizer = AdamW(
+        param_groups + [{'params': crit_params, 'lr': max_lr,
+                         'weight_decay': 1e-4, 'name': 'criterion'}])
 
     _ACCUM=2; _EPOCHS=50
     n_steps = math.ceil(len(tr_loader)/_ACCUM)*_EPOCHS
     print(f"  [Sched] batches={len(tr_loader)} accum={_ACCUM} epochs={_EPOCHS} → total_steps={n_steps}")
-    print(f"  [LR] backbone={max_lr*0.15:.2e}  cls_head={max_lr*0.5:.2e}  other={max_lr:.2e}  hourly={max_lr*0.1:.2e}")
+    print(f"  [LR] backbone={max_lr*0.15:.2e}  cls_head={max_lr*0.5:.2e}  "
+          f"other={max_lr:.2e}  hourly={max_lr*0.1:.2e}")
 
     scheduler = OneCycleLR(optimizer, max_lr=[g['lr'] for g in optimizer.param_groups],
-                            total_steps=n_steps, pct_start=0.2,
-                            div_factor=10, final_div_factor=500, anneal_strategy='cos')
+                            total_steps=n_steps, pct_start=0.15,
+                            div_factor=20, final_div_factor=500, anneal_strategy='cos')
 
     _run_epochs(model, tr_loader, val_loader, optimizer, scheduler, criterion, device,
-                n_epochs=50, patience_limit=15, save_path=model_path, phase_name='F1-full',
+                n_epochs=50, patience_limit=10, save_path=model_path, phase_name='F1-full',
                 ctx_dim=ctx_dim, use_hourly=use_hourly, accum_steps=2,
-                use_mixup=True, mixup_alpha=0.4)  # anti-overfit: alpha 0.2→0.4
+                use_mixup=True, mixup_alpha=0.25)  # FIX v3.13: alpha 0.4→0.25
 
     print("\n" + "="*60 + "\nОценка на test set\n" + "="*60)
     from ml.multiscale_cnn_v3 import evaluate_multiscale_v3
@@ -374,7 +435,7 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Trainer v3.12 — MultiScale CNN для MOEX')
+    parser = argparse.ArgumentParser(description='Trainer v3.13 — MultiScale CNN для MOEX')
     parser.add_argument('--model',           default='ml/model_multiscale_v3.pt')
     parser.add_argument('--rebuild',         action='store_true')
     parser.add_argument('--no-hourly',       action='store_true')
