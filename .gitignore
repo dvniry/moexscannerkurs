@@ -7,6 +7,7 @@ cache/
 eval_results.json
 *.npy
 _meta.json
+итог прогона.txt
 # Environment
 .env
 .env.*
