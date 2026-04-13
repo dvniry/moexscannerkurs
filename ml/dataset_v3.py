@@ -28,14 +28,58 @@ from torch.utils.data import Dataset as TorchDataset
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from ml.config import CFG, SCALES
-from ml.candle_render_v2 import render_candles, N_RENDER_CHANNELS
+from ml.candle_render_v2 import (
+    render_candles as _render_candles_orig,
+    N_RENDER_CHANNELS as _N_RENDER_CHANNELS_ORIG,
+)
 from ml.labels_ohlc import build_ohlc_labels
 from ml.context_loader import load_context_series, build_context_features
 from ml.hourly_encoder import (
     render_hourly_candles, N_HOURLY_CHANNELS,
     N_HOURS_PER_DAY, N_INTRADAY_DAYS,
 )
+# ══════════════════════════════════════════════════════════════════
+# [3.4] Heikin-Ashi — 4-й канал свечного рендера
+# ══════════════════════════════════════════════════════════════════
 
+CACHE_VERSION = "v3.4"          # при смене → auto-rebuild (проверка по каналам)
+N_RENDER_CHANNELS = _N_RENDER_CHANNELS_ORIG + 1   # 3 → 4
+
+
+def render_candles(df_window) -> np.ndarray:
+    """Обёртка над candle_render_v2: добавляет 4-й канал — нормализованный HA-close.
+
+    Вход: DataFrame с колонками open/high/low/close (любой длины).
+    Выход: [H, W, 4] — оригинальные 3 канала + Heikin-Ashi.
+    """
+    orig = _render_candles_orig(df_window)          # [H, W, 3]
+
+    o = df_window["open"].values.astype(np.float64)
+    h = df_window["high"].values.astype(np.float64)
+    l = df_window["low"].values.astype(np.float64)
+    c = df_window["close"].values.astype(np.float64)
+
+    # HA close = (O+H+L+C)/4
+    ha_close = (o + h + l + c) / 4.0
+
+    # HA open[i] = (ha_open[i-1] + ha_close[i-1]) / 2
+    ha_open = np.empty(len(o), dtype=np.float64)
+    ha_open[0] = (o[0] + c[0]) / 2.0
+    for i in range(1, len(o)):
+        ha_open[i] = (ha_open[i - 1] + ha_close[i - 1]) / 2.0
+
+    price_min = l.min()
+    price_max = h.max()
+    rng = max(price_max - price_min, 1e-8)
+    ha_norm = ((ha_close - price_min) / rng).astype(np.float32)  # [T]
+
+    H_dim, W_dim, _ = orig.shape
+    x_src = np.linspace(0, 1, len(ha_norm))
+    x_dst = np.linspace(0, 1, W_dim)
+    ha_col = np.interp(x_dst, x_src, ha_norm).astype(np.float32)   # [W_dim]
+    ha_channel = np.tile(ha_col[np.newaxis, :, np.newaxis], (H_dim, 1, 1))  # [H,W,1]
+
+    return np.concatenate([orig, ha_channel], axis=2)   # [H, W, 4]
 
 # ══════════════════════════════════════════════════════════════════
 # (H, W, C) → (C, W)
@@ -537,6 +581,67 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         # 7-КОРТЕЖ — ключевое изменение
         return imgs, nums, cls_y, ohlc_y, ctx, hourly, aux_y
 
+# ══════════════════════════════════════════════════════════════════
+# [3.4] ATR-адаптивная разметка (заменяет фиксированный порог)
+# ══════════════════════════════════════════════════════════════════
+
+def build_labels_atr(df: pd.DataFrame,
+                     future_bars: int = None,
+                     atr_k: float = None):
+    """ATR-адаптивная разметка классов.
+
+    Порог = atr_k * ATR(14) / close  (в долях от цены).
+    BUY  (0): ret > +thresh
+    SELL (2): ret < -thresh
+    HOLD (1): иначе
+
+    Возвращает tuple той же структуры, что build_ohlc_labels:
+        (ohlc_all, cls_all, valid_all, extra)
+    ohlc_all и valid_all берутся из оригинальной функции.
+    """
+    if future_bars is None:
+        future_bars = CFG.future_bars
+    if atr_k is None:
+        atr_k = CFG.label_atr_k
+
+    # ohlc + valid маски из стандартной функции (без утечки будущего)
+    ohlc_all, _, valid_all, extra = build_ohlc_labels(df)
+
+    c = df["close"].values.astype(np.float64)
+    h = df["high"].values.astype(np.float64)
+    l = df["low"].values.astype(np.float64)
+
+    # True Range
+    tr = np.maximum(
+        h[1:] - l[1:],
+        np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1]))
+    )
+    tr = np.concatenate([[tr[0] if len(tr) else 0.0], tr])
+
+    # ATR(14) — экспоненциальная сглаживание (RMA-стиль как в TradingView)
+    atr14 = np.zeros(len(c))
+    if len(c) >= 14:
+        atr14[13] = tr[:14].mean()
+        for i in range(14, len(c)):
+            atr14[i] = (atr14[i - 1] * 13.0 + tr[i]) / 14.0
+        atr14[:13] = atr14[13]   # backfill первых баров
+
+    cls_all = np.ones(len(c), dtype=np.int64)   # HOLD по умолчанию
+
+    for i in range(len(c) - future_bars):
+        if not valid_all[i]:
+            continue
+        c_now = max(c[i], 1e-9)
+        thresh = atr_k * atr14[i] / c_now      # доля от цены
+        if thresh < 1e-5:                        # защита от нулевого ATR
+            continue
+        ret = (c[i + future_bars] - c_now) / c_now
+        if ret > thresh:
+            cls_all[i] = 0   # BUY
+        elif ret < -thresh:
+            cls_all[i] = 2   # SELL
+
+    return ohlc_all, cls_all, valid_all, extra 
 
 # ══════════════════════════════════════════════════════════════════
 # Построение для одного тикера — возвращает 7-кортеж
@@ -551,14 +656,27 @@ def build_multiscale_dataset_v3(
     df    = add_indicators(df.copy(), imoex).dropna()
     W_max = max(SCALES); F = CFG.future_bars
 
-    # cache_ok требует aux файл — без него всегда rebuild
+    # СТАЛО (v3.4) — проверяем, что каналы == N_RENDER_CHANNELS (4):
+    def _cache_channels_valid(ticker: str) -> bool:
+        """True если кэшированные imgs имеют правильное число каналов."""
+        p = _img_path(ticker, SCALES[0])
+        if not os.path.exists(p):
+            return False
+        try:
+            arr = np.load(p, mmap_mode="r")
+            # shape: [N, C, W] — ось 1 это каналы
+            return arr.ndim == 3 and arr.shape[1] == N_RENDER_CHANNELS
+        except Exception:
+            return False
+
     cache_ok = (
+        _cache_channels_valid(ticker) and                           # [3.4] проверка каналов
         all(os.path.exists(_img_path(ticker, W)) for W in SCALES) and
         all(os.path.exists(_num_path(ticker, W)) for W in SCALES) and
-        os.path.exists(_cls_path(ticker))    and
-        os.path.exists(_ohlc_path(ticker))   and
+        os.path.exists(_cls_path(ticker)) and
+        os.path.exists(_ohlc_path(ticker)) and
         os.path.exists(_hourly_path(ticker)) and
-        os.path.exists(_aux_path(ticker))       # v3.3: обязательно
+        os.path.exists(_aux_path(ticker))
     )
 
     if cache_ok and not force_rebuild:
@@ -586,7 +704,7 @@ def build_multiscale_dataset_v3(
         return _align_arrays(imgs, nums, cls, ohlc, ctx, hourly, aux)
 
     # ── Полное построение ──────────────────────────────────────────
-    ohlc_all, cls_all, valid_all, _ = build_ohlc_labels(df)
+    ohlc_all, cls_all, valid_all, _ = build_labels_atr(df)
     nan_before = (~np.isfinite(ohlc_all)).sum()
     if nan_before > 0:
         for i in range(len(ohlc_all)):

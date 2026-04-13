@@ -1,130 +1,120 @@
 # ml/config.py
-"""Гиперпараметры и константы — v3.3 (ticker cleanup)
+"""Гиперпараметры и константы — v3.4
 
-Изменения v3.3:
-- FIVE  → удалён: X5 Group переехал на тикер "X5" с 9 января 2025,
-          история только с янв.2025 (~300 баров — недостаточно)
-- TCSG  → удалён: дубликат "T" (ТКС-Холдинг переименован в T в 2023)
-- FIXP  → удалён: Fix Price переведён на 3-й уровень листинга (только квал.инв.),
-          Tinkoff API данные не отдаёт
-- DSKY  → удалён: Детский мир официально исключён с MOEX 18.02.2025
-- CIAN  → удалён: МКАО ЦИАН начал торговаться только с 03.04.2025 (<1 года истории)
-
-Итого: 44 тикера (34 рабочих из оригинальных 35 + 10 новых рабочих)
-
-Кандидаты на добавление в 2026 Q3+:
-  "X5"   — листинг с 09.01.2025 (нужно ~2 года истории)
-  "CIAN" — листинг с 03.04.2025 (нужно ~2 года истории)
+Изменения v3.4:
+- label_atr_k: float = 0.7 — коэффициент ATR-адаптивного порога разметки.
+  Порог = atr_k * ATR(14) / close (в долях цены).
+  Заменяет фиксированные profit_thr/loss_thr в build_labels_atr().
 """
 from dataclasses import dataclass
 from typing import Optional
 
-
 SCALES = [5, 10, 20, 30]
-
 
 SECTOR_CONTEXT = {
     # ── Нефть и газ ─────────────────────────────────────────────
-    "ROSN":  ["IMOEX", "LCOc1"],
-    "LKOH":  ["IMOEX", "LCOc1"],
-    "NVTK":  ["IMOEX", "LCOc1"],
-    "TATN":  ["IMOEX", "LCOc1"],
-    "SNGS":  ["IMOEX", "LCOc1"],
-    "AFLT":  ["IMOEX", "LCOc1"],
-    "GAZP":  ["IMOEX", "LCOc1"],
-    "FLOT":  ["IMOEX", "LCOc1"],
+    "ROSN": ["IMOEX", "LCOc1"],
+    "LKOH": ["IMOEX", "LCOc1"],
+    "NVTK": ["IMOEX", "LCOc1"],
+    "TATN": ["IMOEX", "LCOc1"],
+    "SNGS": ["IMOEX", "LCOc1"],
+    "AFLT": ["IMOEX", "LCOc1"],
+    "GAZP": ["IMOEX", "LCOc1"],
+    "FLOT": ["IMOEX", "LCOc1"],
     "TRNFP": ["IMOEX", "LCOc1"],
     "BANEP": ["IMOEX", "LCOc1"],
     # ── Металлы и горнодобыча ────────────────────────────────────
-    "GMKN":  ["IMOEX", "XAU"],
-    "MAGN":  ["IMOEX", "LCOc1"],
-    "NLMK":  ["IMOEX", "LCOc1"],
-    "CHMF":  ["IMOEX", "LCOc1"],
-    "RUAL":  ["IMOEX", "XAU"],
-    "PLZL":  ["IMOEX", "XAU"],
-    "ALRS":  ["IMOEX", "XAU"],
-    "UGLD":  ["IMOEX", "XAU"],
-    "SELG":  ["IMOEX", "XAU"],
+    "GMKN": ["IMOEX", "XAU"],
+    "MAGN": ["IMOEX", "LCOc1"],
+    "NLMK": ["IMOEX", "LCOc1"],
+    "CHMF": ["IMOEX", "LCOc1"],
+    "RUAL": ["IMOEX", "XAU"],
+    "PLZL": ["IMOEX", "XAU"],
+    "ALRS": ["IMOEX", "XAU"],
+    "UGLD": ["IMOEX", "XAU"],
+    "SELG": ["IMOEX", "XAU"],
     # ── Банки и финансы ──────────────────────────────────────────
-    "SBER":  ["IMOEX", "RVI"],
-    "VTBR":  ["IMOEX", "RVI"],
-    "T":     ["IMOEX", "RVI"],
-    "CBOM":  ["IMOEX", "RVI"],
-    "SVCB":  ["IMOEX", "RVI"],
-    "BSPB":  ["IMOEX", "RVI"],
-    "MOEX":  ["IMOEX", "RVI"],
+    "SBER": ["IMOEX", "RVI"],
+    "VTBR": ["IMOEX", "RVI"],
+    "T":    ["IMOEX", "RVI"],
+    "CBOM": ["IMOEX", "RVI"],
+    "SVCB": ["IMOEX", "RVI"],
+    "BSPB": ["IMOEX", "RVI"],
+    "MOEX": ["IMOEX", "RVI"],
     # ── Технологии и телеком ─────────────────────────────────────
-    "MTSS":  ["IMOEX", "RVI"],
-    "YDEX":  ["IMOEX", "RVI"],
-    "RTKM":  ["IMOEX", "RVI"],
-    "VKCO":  ["IMOEX", "RVI"],
-    "POSI":  ["IMOEX", "RVI"],
-    "HEAD":  ["IMOEX", "RVI"],
+    "MTSS": ["IMOEX", "RVI"],
+    "YDEX": ["IMOEX", "RVI"],
+    "RTKM": ["IMOEX", "RVI"],
+    "VKCO": ["IMOEX", "RVI"],
+    "POSI": ["IMOEX", "RVI"],
+    "HEAD": ["IMOEX", "RVI"],
     # ── Ритейл и потребсектор ────────────────────────────────────
-    "MGNT":  ["IMOEX", "RVI"],
-    "OZON":  ["IMOEX", "RVI"],
-    "PHOR":  ["IMOEX", "RVI"],
-    "AFKS":  ["IMOEX", "RVI"],
-    "LENT":  ["IMOEX", "RVI"],
+    "MGNT": ["IMOEX", "RVI"],
+    "OZON": ["IMOEX", "RVI"],
+    "PHOR": ["IMOEX", "RVI"],
+    "AFKS": ["IMOEX", "RVI"],
+    "LENT": ["IMOEX", "RVI"],
     # ── Прочее ───────────────────────────────────────────────────
-    "IRAO":  ["IMOEX", "RVI"],
-    "PIKK":  ["IMOEX", "RVI"],
-    "SMLT":  ["IMOEX", "RVI"],
+    "IRAO": ["IMOEX", "RVI"],
+    "PIKK": ["IMOEX", "RVI"],
+    "SMLT": ["IMOEX", "RVI"],
     # ── Энергетика ───────────────────────────────────────────────
-    "HYDR":  ["IMOEX", "RVI"],
-    "FEES":  ["IMOEX", "RVI"],
-    "MSNG":  ["IMOEX", "RVI"],
-    "UPRO":  ["IMOEX", "RVI"],
+    "HYDR": ["IMOEX", "RVI"],
+    "FEES": ["IMOEX", "RVI"],
+    "MSNG": ["IMOEX", "RVI"],
+    "UPRO": ["IMOEX", "RVI"],
     # ── Fallback ─────────────────────────────────────────────────
     "__default__": ["IMOEX", "RVI"],
 }
 
-
 @dataclass
 class MLConfig:
     # ── Данные ──────────────────────────────────────────────────
-    tickers:     list  = None
-    interval:    str   = "1d"
-    days_back:   int   = 3650
-    future_bars: int   = 5
-    profit_thr:  float = 0.010
-    loss_thr:    float = -0.010
+    tickers: list = None
+    interval: str = "1d"
+    days_back: int = 3650
+    future_bars: int = 5
+    profit_thr: float = 0.010
+    loss_thr: float = -0.010
 
     # ── Комиссия брокера ────────────────────────────────────────
     broker_commission: float = 0.0005
-    min_net_profit:    float = 0.0030
+    min_net_profit: float = 0.0030
 
     # ── Image encoder ───────────────────────────────────────────
     img_size: int = 64
-    window:   int = 15
+    window: int = 15
 
     # ── MLP ─────────────────────────────────────────────────────
-    mlp_hidden:  list  = None
+    mlp_hidden: list = None
     mlp_dropout: float = 0.3
-    mlp_lr:      float = 1e-3
+    mlp_lr: float = 1e-3
 
     # ── CNN / MultiScale ────────────────────────────────────────
-    cnn_backbone:    str   = "resnet18"
-    cnn_lr:          float = 1e-4
+    cnn_backbone: str = "resnet18"
+    cnn_lr: float = 1e-4
     cnn_finetune_lr: float = 5e-5
-    scale_dim:       int   = 64
-    lstm_hidden:     int   = 128
-    market_dim:      int   = 16
+    scale_dim: int = 64
+    lstm_hidden: int = 128
+    market_dim: int = 16
 
     # ── Обучение ────────────────────────────────────────────────
-    batch_size:  int   = 64
-    epochs_pre:  int   = 50
-    epochs_fine: int   = 25
-    val_split:   float = 0.2
-    seed:        int   = 42
+    batch_size: int = 64
+    epochs_pre: int = 50
+    epochs_fine: int = 25
+    val_split: float = 0.2
+    seed: int = 42
 
     # ── Loss weights ────────────────────────────────────────────
     ohlc_loss_weight: float = 0.3
 
     # ── Адаптивные пороги v3.1 ──────────────────────────────────
-    use_adaptive_threshold: bool  = True
-    adaptive_k:             float = 0.5
-    adaptive_min_thr:       float = 0.004
+    use_adaptive_threshold: bool = True
+    adaptive_k: float = 0.5
+    adaptive_min_thr: float = 0.004
+
+    # ── ATR-адаптивная разметка v3.4 ────────────────────────────
+    label_atr_k: float = 0.7  # NEW: порог = atr_k * ATR(14) / close
 
     def __post_init__(self):
         if self.tickers is None:
@@ -163,6 +153,5 @@ class MLConfig:
     @property
     def effective_profit_thr(self) -> float:
         return self.profit_thr + 2 * self.broker_commission + self.min_net_profit
-
 
 CFG = MLConfig()

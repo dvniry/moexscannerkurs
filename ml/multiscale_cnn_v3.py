@@ -93,9 +93,9 @@ class ResBlock(nn.Module):
 
 
 class SingleScaleBackbone(nn.Module):
-    def __init__(self, base_ch=64):
+    def __init__(self, base_ch=64, in_channels: int = 4):
         super().__init__()
-        self.stem = ConvBnAct(3, base_ch, k=5)
+        self.stem = ConvBnAct(in_channels, base_ch, k=5)
         self.blocks = nn.Sequential(
             ResBlock(base_ch, dilation=1, drop_path_rate=0.05),
             ConvBnAct(base_ch, base_ch * 2, k=3, stride=2),
@@ -364,13 +364,13 @@ class AuxHead(nn.Module):
 # ────────────────────────────────────────────────────────────
 
 class MultiScaleHybridV3(nn.Module):
-    def __init__(self, ctx_dim=0, n_indicator_cols=37, future_bars=5, use_hourly=True):
+    def __init__(self, ctx_dim=0, n_indicator_cols=37, future_bars=5, use_hourly=True, in_channels = 4):
         super().__init__()
         self.use_hourly = use_hourly
         self.ctx_dim    = ctx_dim
 
         self.backbones = nn.ModuleDict(
-            {str(W): SingleScaleBackbone() for W in SCALES})
+            {str(W): SingleScaleBackbone(in_channels=in_channels) for W in SCALES})  # [3.17]
 
         # [5.wav] Вейвлет-денойзер перед seq_branch
         self.wavelet    = WaveletDenoise(threshold=0.08, levels=1)
