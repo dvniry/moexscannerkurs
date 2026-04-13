@@ -1,15 +1,18 @@
 # ml/trainer_v3.py
-"""Trainer v3.15
+"""Trainer v3.16
 
-Изменения v3.15:
-- [5.1]  CAWR вместо OneCycleLR: CosineAnnealingWarmRestarts(T_0=10, T_mult=2)
-         scheduler.step() — один раз в конце каждой эпохи
-- [5.2]  Adaptive Focal Loss: criterion.focal.set_gamma(epoch) в начале каждой эпохи
-         gamma нарастает от 0 до max за 10 эпох
-- [5.3]  TF-C pretraining вместо MAE: temporal-repr ≈ freq-repr (NT-Xent)
-- [5.4]  label_smoothing снижен до 0.08 (было 0.15)
-- Все FIX из v3.14 сохранены: WRS, patience=8, trading-first metric,
-  weight_decay backbone 5e-4, BiLSTM clip 0.5
+Изменения v3.16:
+- [5.1] CAWR T_0 увеличен 10 → 20 (совместимо с 60 эпохами)
+  Рестарты теперь на e20 и e60 — более плавное cosine-расписание
+- Увеличено _EPOCHS 50 → 60, patience_limit 8 → 12 (достаточно T_0=20)
+- MultiTaskLossV3 теперь использует OHLCLossV2 (huber_delta=0.5)
+- [MULTIPROCESSING FIX] _make_loader_v3: num_workers=0 по умолчанию
+  Убирает RuntimeError spawn на Windows без if __name__ guard
+- if __name__ guard + freeze_support() в точке входа
+
+Все улучшения v3.15 сохранены: TF-C pretrain, adaptive focal,
+label_smoothing=0.08, WRS sampler, trading-first metric,
+backbone weight_decay=5e-4, BiLSTM clip=0.5.
 """
 import os
 os.environ['GRPC_DNS_RESOLVER'] = 'native'
@@ -32,9 +35,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from ml.config import CFG, SCALES
 from ml.dataset_v3 import class_distribution
 
-
 # ────────────────────────────────────────────────────────────
-# [5.3] TF-C Pretraining (заменяет MAE pretrain)
+# [5.3] TF-C Pretraining
 # ────────────────────────────────────────────────────────────
 
 def _pretrain_tfc(model, tr_loader, device, n_epochs=5, lr=3e-4):
@@ -86,19 +88,19 @@ def _pretrain_tfc(model, tr_loader, device, n_epochs=5, lr=3e-4):
     for epoch in range(1, n_epochs + 1):
         total_loss = 0.0; n_batches = 0
         for batch in tr_loader:
-            x    = batch[0][W_short].to(device).float()
-            x_t  = _aug_time(x)
-            x_f  = _aug_freq(x)
+            x     = batch[0][W_short].to(device).float()
+            x_t   = _aug_time(x)
+            x_f   = _aug_freq(x)
             feat_t = model.backbones[str(W_short)](x_t)
             feat_f = model.backbones[str(W_short)](x_f)
-            z_t  = projector(feat_t)
-            z_f  = projector(feat_f)
-            loss = _nt_xent(z_t, z_f)
+            z_t    = projector(feat_t)
+            z_f    = projector(feat_f)
+            loss   = _nt_xent(z_t, z_f)
             opt.zero_grad(); loss.backward()
             nn.utils.clip_grad_norm_(params, 1.0)
             opt.step(); sched.step()
             total_loss += loss.item(); n_batches += 1
-        print(f'  [TF-C] E{epoch:2d}/{n_epochs}  '
+        print(f'  [TF-C] E{epoch:2d}/{n_epochs} '
               f'loss={total_loss / max(n_batches, 1):.4f}')
 
     for p in model.parameters():
@@ -117,7 +119,7 @@ def _init_cls_head(model):
             nn.init.xavier_uniform_(p, gain=0.1)
         elif 'bias' in name:
             nn.init.zeros_(p)
-        print(f'  [Init] cls_head: {name} shape={list(p.shape)}')
+    print(f'  [Init] cls_head re-initialized')
 
 
 # ────────────────────────────────────────────────────────────
@@ -131,8 +133,8 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
     from ml.multiscale_cnn_v3 import mixup_data
     from sklearn.metrics import f1_score
 
-    best_metric       = 0.0
-    patience          = 0
+    best_metric   = 0.0
+    patience      = 0
     DEAD_STREAK_LIMIT = 50
     zero_grad_streak  = 0
 
@@ -154,7 +156,6 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
         print('  [RECOVERY] Dead gradient → reset cls_head + optimizer state')
 
     for epoch in range(1, n_epochs + 1):
-
         # [5.2] Adaptive gamma
         criterion.focal.set_gamma(epoch, warmup_epochs=10)
 
@@ -166,10 +167,10 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
         for step, batch in enumerate(tr_loader, 1):
             imgs_dict, num_dict, cls_y, ohlc_y, ctx, *hourly_opt = batch
             hourly_data = hourly_opt[0] if hourly_opt else None
-            imgs     = {W: imgs_dict[W].to(device) for W in SCALES}
-            cls_y    = cls_y.to(device)
-            ohlc_y   = ohlc_y.to(device).clamp(-5.0, 5.0)
-            ctx_t    = ctx.to(device) if ctx_dim > 0 else None
+            imgs   = {W: imgs_dict[W].to(device) for W in SCALES}
+            cls_y  = cls_y.to(device)
+            ohlc_y = ohlc_y.to(device).clamp(-5.0, 5.0)
+            ctx_t  = ctx.to(device) if ctx_dim > 0 else None
             hourly_t = (hourly_data.to(device)
                         if (use_hourly and hourly_data is not None) else None)
             nums = ({W: num_dict[W].to(device) for W in SCALES}
@@ -188,7 +189,7 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                         lo_d, cls_y, op_d.float(), ohlc_y.float())
                 print(f'  [DBG] loss={l.item():.4f} cls={lc.item():.4f} '
                       f'reg={lr2.item():.4f} aux={la.item():.4f}')
-                print(f'  [DBG] Scheduler: CAWR T_0=10 T_mult=2')
+                print(f'  [DBG] Scheduler: CAWR T_0=20 T_mult=2')
                 print('  [DBG] ───────────────────────────────────\n')
 
             if use_mixup and mixup_alpha > 0:
@@ -197,17 +198,17 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                     imgs, nums, cls_y, ohlc_y.float(),
                     ctx_t, mixup_alpha, hourly=hourly_t)
                 lo, op, aux = model(m_imgs, m_nums, m_ctx, hourly=m_hourly)
-                lo  = lo.float().clamp(-15., 15.).nan_to_num(nan=0.)
-                op  = op.float().nan_to_num(nan=0.)
+                lo = lo.float().clamp(-15., 15.).nan_to_num(nan=0.)
+                op = op.float().nan_to_num(nan=0.)
                 la_l, lca, lra, _ = criterion(lo, cls_a, op, m_ohlc)
                 lb_l, lcb, lrb, _ = criterion(lo, cls_b, op, m_ohlc)
-                loss  = lam * la_l + (1 - lam) * lb_l
-                lcls  = lam * lca  + (1 - lam) * lcb
-                lreg  = lam * lra  + (1 - lam) * lrb
+                loss = lam * la_l + (1 - lam) * lb_l
+                lcls = lam * lca  + (1 - lam) * lcb
+                lreg = lam * lra  + (1 - lam) * lrb
             else:
                 lo, op, aux = model(imgs, nums, ctx_t, hourly=hourly_t)
-                lo   = lo.float().clamp(-15., 15.).nan_to_num(nan=0.)
-                op   = op.float().nan_to_num(nan=0.)
+                lo = lo.float().clamp(-15., 15.).nan_to_num(nan=0.)
+                op = op.float().nan_to_num(nan=0.)
                 loss, lcls, lreg, _ = criterion(
                     lo, cls_y, op, ohlc_y.float())
 
@@ -218,9 +219,9 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
             (loss / accum_steps).backward()
             _last_lo    = lo.detach()
             _last_cls_y = cls_y.detach()
-            total_cls  += lcls.item()
-            total_reg  += lreg.item()
-            n_steps    += 1
+            total_cls += lcls.item()
+            total_reg += lreg.item()
+            n_steps   += 1
 
             if step % accum_steps == 0 or step == len(tr_loader):
                 trainable   = [p for g in optimizer.param_groups
@@ -264,24 +265,24 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                     dist = [(pred_cls == c).float().mean().item()
                             for c in range(3)]
                     tr_acc = (pred_cls == _last_cls_y).float().mean().item()
-                g_str = '[' + ','.join(f'{g:.2f}'
-                                       for g in criterion.focal.gamma) + ']'
-                print(f'  [FOCAL] e={epoch} s={step} gamma={g_str} '
-                      f'pt: BUY={pt[0]:.3f} HOLD={pt[1]:.3f} SELL={pt[2]:.3f} | '
-                      f'dist: BUY={dist[0]:.3f} HOLD={dist[1]:.3f} SELL={dist[2]:.3f} | '
-                      f'tr_acc={tr_acc:.3f}')
+                    g_str  = '[' + ','.join(f'{g:.2f}'
+                                            for g in criterion.focal.gamma) + ']'
+                    print(f'  [FOCAL] e={epoch} s={step} gamma={g_str} '
+                          f'pt: BUY={pt[0]:.3f} HOLD={pt[1]:.3f} SELL={pt[2]:.3f} | '
+                          f'dist: BUY={dist[0]:.3f} HOLD={dist[1]:.3f} SELL={dist[2]:.3f} | '
+                          f'tr_acc={tr_acc:.3f}')
 
         # ── Val loop ─────────────────────────────────────────
         model.eval(); criterion.eval()
-        val_preds     = []; val_trues     = []
+        val_preds = []; val_trues = []
         val_ohlc_pred = []; val_ohlc_true = []
 
         with torch.no_grad():
             for batch in val_loader:
                 imgs_dict, num_dict, cls_y, ohlc_y, ctx, *hourly_opt = batch
                 hourly_data = hourly_opt[0] if hourly_opt else None
-                imgs    = {W: imgs_dict[W].to(device) for W in SCALES}
-                ctx_t   = ctx.to(device) if ctx_dim > 0 else None
+                imgs   = {W: imgs_dict[W].to(device) for W in SCALES}
+                ctx_t  = ctx.to(device) if ctx_dim > 0 else None
                 hourly_t = (hourly_data.to(device)
                             if (use_hourly and hourly_data is not None) else None)
                 nums = ({W: num_dict[W].to(device) for W in SCALES}
@@ -293,10 +294,9 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 val_ohlc_true.append(ohlc_y.float().numpy())
 
         vp = np.array(val_preds); vt = np.array(val_trues)
-        val_acc  = (vp == vt).mean()
-        macro_f1 = f1_score(vt, vp, average='macro', zero_division=0)
-        f1pc     = f1_score(vt, vp, average=None,
-                            labels=[0, 1, 2], zero_division=0)
+        val_acc   = (vp == vt).mean()
+        macro_f1  = f1_score(vt, vp, average='macro', zero_division=0)
+        f1pc      = f1_score(vt, vp, average=None, labels=[0, 1, 2], zero_division=0)
         buy_f1, hold_f1, sell_f1 = f1pc[0], f1pc[1], f1pc[2]
 
         ohlc_p_np = np.concatenate(val_ohlc_pred, axis=0)
@@ -311,8 +311,8 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
             dir_acc_ohlc = 0.5; ohlc_mae = 999.
 
         dir_f1     = 0.5 * (buy_f1 + sell_f1)
-        val_metric = (0.35 * val_acc + 0.35 * dir_f1
-                      + 0.15 * macro_f1 + 0.15 * dir_acc_ohlc)
+        val_metric = (0.25*val_acc + 0.25*macro_f1 
+                + 0.20*dir_f1 + 0.15*hold_f1 + 0.15*dir_acc_ohlc)
 
         # [5.1] CAWR: один шаг в конце эпохи
         scheduler.step()
@@ -331,7 +331,7 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
         if val_metric > best_metric:
             best_metric = val_metric; patience = 0
             torch.save(model.state_dict(), save_path)
-            print(f'  ✓ saved  metric={val_metric:.4f}')
+            print(f'  ✓ saved metric={val_metric:.4f}')
         else:
             patience += 1
             if patience >= patience_limit:
@@ -373,7 +373,7 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
     y_tr   = y_all[idx_tr]
     y_val  = y_all[idx_val]
     y_test = y_all[idx_test]
-    print(f'  Train: {len(y_tr)}  Val: {len(y_val)}  Test: {len(y_test)}')
+    print(f'  Train: {len(y_tr)} Val: {len(y_val)} Test: {len(y_test)}')
     print('  Распределение (all):');   class_distribution(y_all)
     print('  Распределение (train):'); class_distribution(y_tr)
 
@@ -387,10 +387,12 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
 
     tr_subset  = Subset(dataset, idx_tr.tolist())
     val_subset = Subset(dataset, idx_val.tolist())
+    # v3.16: num_workers=0 — фикс Windows multiprocessing
     tr_loader  = _make_loader_v3(tr_subset,  CFG.batch_size,
-                                  shuffle=False, sampler=wrs_sampler)
-    val_loader = _make_loader_v3(val_subset, CFG.batch_size, shuffle=False)
-    te_ds      = Subset(dataset, idx_test.tolist())
+                                  shuffle=False, sampler=wrs_sampler, num_workers=0)
+    val_loader = _make_loader_v3(val_subset, CFG.batch_size,
+                                  shuffle=False, num_workers=0)
+    te_ds = Subset(dataset, idx_test.tolist())
 
     n_ind = len(INDICATOR_COLS)
     print(f'  n_indicator_cols={n_ind}')
@@ -402,21 +404,21 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
     _init_cls_head(model)
 
     counts_dict = Counter(y_tr.tolist()); total_tr = len(y_tr)
-    raw_w       = [total_tr / (counts_dict.get(i, 1) * 3) for i in range(3)]
-    max_w       = max(raw_w)
-    cls_weights = torch.tensor(
-        [w / max_w * 3. for w in raw_w],
-        dtype=torch.float32).to(device)
+    import math
+    raw_w = [math.sqrt(total_tr / max(counts_dict.get(i,1), 1)) for i in range(3)]
+    max_w = max(raw_w)
+    cls_weights = torch.tensor([w/max_w for w in raw_w], dtype=torch.float32).to(device)
     print(f'  Class weights: BUY={cls_weights[0]:.3f} '
           f'HOLD={cls_weights[1]:.3f} SELL={cls_weights[2]:.3f}')
 
     criterion = MultiTaskLossV3(
         cls_weight=cls_weights,
-        gamma_per_class=(1.5, 2.0, 1.5),
-        label_smoothing=0.08,           # [5.4]
+        gamma_per_class=(2.0, 3.5, 2.0),   # FLAT gamma поднята
+        label_smoothing=0.08,
         future_bars=CFG.future_bars,
-        direction_weight=0.30,
-        reg_loss_weight=0.15,
+        huber_delta=0.5,
+        direction_weight=0.50,              # было 0.30
+        reg_loss_weight=0.25,               # было 0.15
         aux_loss_weight=0.05,
     ).to(device)
 
@@ -424,7 +426,7 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
         _pretrain_tfc(model, tr_loader, device,
                       n_epochs=pretrain_epochs, lr=3e-4)
 
-    print('\n  [Phase-1] Full training — CAWR, adaptive gamma')
+    print('\n  [Phase-1] Full training — CAWR T_0=20, adaptive gamma')
     max_lr = 3e-4
 
     backbone_ids = {id(p) for p in model.backbone.parameters()}
@@ -435,9 +437,9 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
 
     param_groups = [
         {'params': list(model.backbone.parameters()),
-         'lr': max_lr * 0.15, 'name': 'backbone',  'weight_decay': 5e-4},
+         'lr': max_lr * 0.15, 'name': 'backbone', 'weight_decay': 5e-4},
         {'params': list(model.cls_head.parameters()),
-         'lr': max_lr * 0.5,  'name': 'cls_head',  'weight_decay': 1e-4},
+         'lr': max_lr * 0.5,  'name': 'cls_head', 'weight_decay': 1e-4},
         {'params': [p for p in model.parameters()
                     if (p.requires_grad
                         and id(p) not in backbone_ids
@@ -454,21 +456,22 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
         param_groups + [{'params': crit_params, 'lr': max_lr,
                          'name': 'criterion', 'weight_decay': 1e-4}])
 
-    _ACCUM  = 2
-    _EPOCHS = 50
-    print(f'  [Sched] CAWR T_0=10 T_mult=2 → рестарты на e10, e30')
-    print(f'  [LR]   backbone={max_lr * 0.15:.2e} '
+    _ACCUM     = 2
+    _EPOCHS    = 60    # v3.16: 50 → 60
+    _PATIENCE  = 12    # v3.16: 8  → 12  (достаточно T_0=20)
+    print(f'  [Sched] CAWR T_0=20 T_mult=2 → рестарты на e20, e60')
+    print(f'  [LR]    backbone={max_lr * 0.15:.2e} '
           f'cls_head={max_lr * 0.5:.2e} other={max_lr:.2e}')
 
-    # [5.1] CosineAnnealingWarmRestarts
+    # [5.1] CosineAnnealingWarmRestarts T_0=20 (v3.16)
     scheduler = CosineAnnealingWarmRestarts(
-        optimizer, T_0=10, T_mult=2, eta_min=1e-6)
+        optimizer, T_0=20, T_mult=2, eta_min=1e-6)
 
     _run_epochs(
         model, tr_loader, val_loader, optimizer, scheduler,
         criterion, device,
         n_epochs=_EPOCHS,
-        patience_limit=8,
+        patience_limit=_PATIENCE,
         save_path=model_path,
         phase_name='F1-full',
         ctx_dim=ctx_dim,
@@ -492,8 +495,10 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Trainer v3.15')
-    parser.add_argument('--model', default='ml/model_multiscale_v3.pt')
+    from multiprocessing import freeze_support
+    freeze_support()                           # v3.16: фикс Windows spawn
+    parser = argparse.ArgumentParser(description='Trainer v3.16')
+    parser.add_argument('--model',           default='ml/model_multiscale_v3.pt')
     parser.add_argument('--rebuild',         action='store_true')
     parser.add_argument('--no-hourly',       action='store_true')
     parser.add_argument('--no-pretrain',     action='store_true')

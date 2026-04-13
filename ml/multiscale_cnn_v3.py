@@ -1,14 +1,25 @@
 # ml/multiscale_cnn_v3.py
-"""MultiScale CNN Hybrid v3.15
+"""MultiScale CNN Hybrid v3.16
 
-Изменения v3.15:
-- [5.wav] WaveletDenoise: Haar soft-thresholding на nums перед seq_branch (pure PyTorch)
-- [5.2]  AdaptiveFocalLoss: gamma нарастает от 0 до max за warmup_epochs (set_gamma())
-- [4.1]  xLSTMBranch: заменяет BiLSTMBranch (pip install xlstm; fallback на BiLSTM)
-- [4.2]  VariableSelectionNetwork (TFT-style): заменяет StreamFusion (MHA)
-- [4.4]  DropPath schedule 0.05→0.10→0.15 в ResBlock
-- [2.3]  PinballLoss для OHLC (High→q90, Low→q10, Open/Close→q50)
-- [2.4]  AuxHead: realized_vol + skew
+Изменения v3.16:
+
+FIX 1 (OHLC HEAD): OHLCHead → OHLCHeadV2.
+Декомпозиция свечи: mid=(H+L)/2 и range=H-L предсказываются отдельно.
+range прогоняется через softplus → всегда > 0 → H всегда > L по построению.
+O и C предсказываются напрямую (отдельная голова head_oc).
+Выход тот же: [B, future_bars*4], формат [O,H,L,C] × bars.
+
+FIX 2 (OHLC LOSS): MultiTaskLossV3 теперь использует OHLCLossV2 вместо PinballLoss.
+OHLCLossV2 — взвешенный Huber + физический constraint.
+Веса компонент: O=0.5, H=1.5, L=1.5, C=1.0 (High/Low важнее для торговли).
+Constraint: штраф за нарушение H>=max(O,C) и L<=min(O,C).
+constraint_w=0.3 — мягкий штраф, не доминирует над основным лоссом.
+
+FIX 3 (EVALUATE): evaluate_multiscale_v3 — per-bar MAE таблица + H/L violation rate.
+Показывает насколько часто модель нарушает физику свечи (цель: <1%).
+
+FIX 4 (MULTIPROCESSING): _make_loader_v3 num_workers default 4 → 0.
+Windows spawn-режим не поддерживает num_workers>0 без if __name__ guard.
 """
 import math
 import torch
@@ -30,7 +41,6 @@ except (ImportError, OSError, Exception):
     HAS_XLSTM = False
 
 TRUNK_OUT = 128
-
 
 # ────────────────────────────────────────────────────────────
 # Blocks
@@ -60,9 +70,9 @@ class DropPath(nn.Module):
     def forward(self, x):
         if not self.training or self.drop_rate <= 0.0:
             return x
-        keep  = 1.0 - self.drop_rate
+        keep = 1.0 - self.drop_rate
         shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-        mask  = torch.bernoulli(torch.full(shape, keep, dtype=x.dtype, device=x.device))
+        mask = torch.bernoulli(torch.full(shape, keep, dtype=x.dtype, device=x.device))
         return x * mask / keep
 
 
@@ -75,7 +85,7 @@ class ResBlock(nn.Module):
             nn.Conv1d(c, c, 1, bias=False),
             nn.BatchNorm1d(c),
         )
-        self.act       = nn.GELU()
+        self.act = nn.GELU()
         self.drop_path = DropPath(drop_path_rate)
 
     def forward(self, x):
@@ -85,13 +95,13 @@ class ResBlock(nn.Module):
 class SingleScaleBackbone(nn.Module):
     def __init__(self, base_ch=64):
         super().__init__()
-        self.stem   = ConvBnAct(3, base_ch, k=5)
+        self.stem = ConvBnAct(3, base_ch, k=5)
         self.blocks = nn.Sequential(
-            ResBlock(base_ch,      dilation=1, drop_path_rate=0.05),
-            ConvBnAct(base_ch,     base_ch * 2, k=3, stride=2),
-            ResBlock(base_ch * 2,  dilation=2, drop_path_rate=0.10),
-            ConvBnAct(base_ch * 2, TRUNK_OUT,   k=3, stride=2),
-            ResBlock(TRUNK_OUT,    dilation=1, drop_path_rate=0.15),
+            ResBlock(base_ch, dilation=1, drop_path_rate=0.05),
+            ConvBnAct(base_ch, base_ch * 2, k=3, stride=2),
+            ResBlock(base_ch * 2, dilation=2, drop_path_rate=0.10),
+            ConvBnAct(base_ch * 2, TRUNK_OUT, k=3, stride=2),
+            ResBlock(TRUNK_OUT, dilation=1, drop_path_rate=0.15),
         )
         self.pool = nn.AdaptiveAvgPool1d(1)
 
@@ -145,7 +155,7 @@ class WaveletDenoise(nn.Module):
         lp_t = self.lp.flip(-1)
         hp_t = self.hp.flip(-1)
         rec  = (F.conv_transpose1d(approx, lp_t, stride=2)
-              + F.conv_transpose1d(detail, hp_t, stride=2))
+                + F.conv_transpose1d(detail, hp_t, stride=2))
         return rec[:, :, :out_len]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -179,7 +189,7 @@ class xLSTMBranch(nn.Module):
     """[4.1] xLSTM если xlstm установлен, иначе BiLSTM fallback."""
     def __init__(self, n_ind: int = 37, hidden: int = 128, context_length: int = None):
         super().__init__()
-        ctx_len         = context_length or max(SCALES)
+        ctx_len = context_length or max(SCALES)
         self._use_xlstm = HAS_XLSTM
 
         if HAS_XLSTM:
@@ -268,14 +278,75 @@ class CalibratedClsHead(nn.Module):
         return self.head(x)
 
 
-class OHLCHead(nn.Module):
-    def __init__(self, in_dim=TRUNK_OUT, n_out=4):
+class OHLCHeadV2(nn.Module):
+    """Декомпозированная голова для ΔOHLC.  # v3.16
+
+    Вместо прямой регрессии 4*fb чисел:
+      - head_oc:    [O, C] × future_bars  — прямая регрессия
+      - head_mid:   mid=(H+L)/2 × future_bars
+      - head_range: range=H-L × future_bars  (softplus → всегда > 0)
+    H = mid + range/2,  L = mid - range/2  → H > L по построению.
+    """
+    def __init__(self, in_dim=TRUNK_OUT, future_bars=5):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, 128), nn.GELU(), nn.Dropout(0.1), nn.Linear(128, n_out))
+        self.future_bars = future_bars
+        self.shared = nn.Sequential(
+            nn.Linear(in_dim, 128), nn.GELU(), nn.Dropout(0.1),
+        )
+        self.head_oc    = nn.Linear(128, 2 * future_bars)   # [O×fb, C×fb]
+        self.head_mid   = nn.Linear(128, future_bars)
+        self.head_range = nn.Linear(128, future_bars)
 
     def forward(self, x):
-        return self.net(x)
+        h   = self.shared(x)
+        oc  = self.head_oc(h)                               # [B, 2*fb]
+        mid = self.head_mid(h)                              # [B, fb]
+        rng = F.softplus(self.head_range(h)) + 1e-4        # [B, fb], > 0
+
+        fb = self.future_bars
+        O  = oc[:, :fb]                                     # [B, fb]
+        C  = oc[:, fb:]                                     # [B, fb]
+        H  = mid + rng / 2                                  # [B, fb]
+        L  = mid - rng / 2                                  # [B, fb]
+
+        # [B, fb, 4] → [B, fb*4], формат [O,H,L,C] per bar
+        ohlc = torch.stack([O, H, L, C], dim=-1)           # [B, fb, 4]
+        return ohlc.reshape(x.shape[0], -1)                # [B, fb*4]
+
+
+class OHLCLossV2(nn.Module):
+    """Взвешенный Huber + физический constraint для OHLC.  # v3.16
+
+    Веса: H и L штрафуются сильнее — критичны для SL/TP в торговле.
+    Constraint: H >= max(O,C), L <= min(O,C) — через ReLU-штраф.
+    """
+    def __init__(self, weights=(0.5, 1.5, 1.5, 1.0),
+                 delta=0.5, constraint_w=0.3):
+        super().__init__()
+        self.register_buffer('w', torch.tensor(weights, dtype=torch.float32))
+        self.delta        = delta
+        self.constraint_w = constraint_w
+
+    def forward(self, pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
+        """pred, true: [B, fb*4] — плоский формат [O,H,L,C] × bars"""
+        B  = pred.shape[0]
+        fb = pred.shape[1] // 4
+
+        p = pred.reshape(B, fb, 4)
+        t = true.reshape(B, fb, 4)
+
+        # Взвешенный Huber по всем барам
+        huber    = F.huber_loss(p, t, reduction='none', delta=self.delta)  # [B,fb,4]
+        reg_loss = (huber * self.w).mean()
+
+        # Физические ограничения по первому бару
+        O, H, L, C = p[:, 0, 0], p[:, 0, 1], p[:, 0, 2], p[:, 0, 3]
+        constraint = (F.relu(O - H).mean()   # O > H
+                    + F.relu(C - H).mean()   # C > H
+                    + F.relu(L - O).mean()   # L > O
+                    + F.relu(L - C).mean())  # L > C
+
+        return reg_loss + self.constraint_w * constraint
 
 
 class AuxHead(nn.Module):
@@ -298,14 +369,15 @@ class MultiScaleHybridV3(nn.Module):
         self.use_hourly = use_hourly
         self.ctx_dim    = ctx_dim
 
-        self.backbones  = nn.ModuleDict(
+        self.backbones = nn.ModuleDict(
             {str(W): SingleScaleBackbone() for W in SCALES})
 
         # [5.wav] Вейвлет-денойзер перед seq_branch
         self.wavelet    = WaveletDenoise(threshold=0.08, levels=1)
 
         # [4.1] xLSTM / BiLSTM
-        self.seq_branch = xLSTMBranch(n_ind=n_indicator_cols, context_length=max(SCALES))
+        self.seq_branch = xLSTMBranch(n_ind=n_indicator_cols,
+                                       context_length=max(SCALES))
 
         self.num_grn = nn.ModuleDict(
             {str(W): GRN(n_indicator_cols, TRUNK_OUT)
@@ -319,7 +391,7 @@ class MultiScaleHybridV3(nn.Module):
 
         n_streams  = len(SCALES) + 1
         n_streams += len([W for W in SCALES if W < max(SCALES)])
-        if use_hourly:  n_streams += 1
+        if use_hourly: n_streams += 1
         if ctx_dim > 0: n_streams += 1
 
         # [4.2] VSN fusion
@@ -327,7 +399,7 @@ class MultiScaleHybridV3(nn.Module):
             n_streams=n_streams, d_model=TRUNK_OUT, dropout=0.15)
 
         self.cls_head  = CalibratedClsHead(TRUNK_OUT)
-        self.ohlc_head = OHLCHead(TRUNK_OUT, n_out=4 * future_bars)
+        self.ohlc_head = OHLCHeadV2(TRUNK_OUT, future_bars=future_bars)  # v3.16: future_bars
         self.aux_head  = AuxHead(TRUNK_OUT)
 
         self.backbone = self.backbones[str(min(SCALES))]
@@ -353,7 +425,7 @@ class MultiScaleHybridV3(nn.Module):
         long_W = max(SCALES)
         if nums is not None and long_W in nums:
             x_long = nums[long_W].float()
-            x_long = self.wavelet(x_long)       # [5.wav]
+            x_long = self.wavelet(x_long)          # [5.wav]
             feats.append(self.seq_branch(x_long))
         else:
             feats.append(torch.zeros(
@@ -404,7 +476,7 @@ class AsymmetricFocalLoss(nn.Module):
         self.gamma = [g * t for g in self._max_gamma]
 
     def forward(self, logits, targets):
-        ce      = F.cross_entropy(
+        ce = F.cross_entropy(
             logits.float(), targets,
             weight=self.cls_weight,
             label_smoothing=self.ls,
@@ -419,7 +491,7 @@ class AsymmetricFocalLoss(nn.Module):
 
 
 class PinballLoss(nn.Module):
-    """[2.3] Квантильный loss: [O q50, H q90, L q10, C q50] × future_bars."""
+    """[2.3] Оставлен для совместимости. В v3.16 заменён OHLCLossV2."""
     QUANTILES = [0.50, 0.90, 0.10, 0.50]
 
     def __init__(self, future_bars=5):
@@ -437,8 +509,8 @@ class PinballLoss(nn.Module):
 class AuxLoss(nn.Module):
     def forward(self, pred, target):
         return (F.mse_loss(pred[:, 0], target[:, 0])
-              + F.mse_loss(torch.tanh(pred[:, 1] / 3.),
-                           torch.tanh(target[:, 1] / 3.)))
+                + F.mse_loss(torch.tanh(pred[:, 1] / 3.),
+                             torch.tanh(target[:, 1] / 3.)))
 
 
 class MultiTaskLossV3(nn.Module):
@@ -446,27 +518,30 @@ class MultiTaskLossV3(nn.Module):
                  gamma_per_class=(1.5, 3.5, 1.5),
                  label_smoothing=0.08,
                  future_bars=5,
+                 huber_delta=0.5,
                  direction_weight=0.40,
                  reg_loss_weight=0.30,
                  aux_loss_weight=0.05):
         super().__init__()
-        self.focal           = AsymmetricFocalLoss(
+        self.focal     = AsymmetricFocalLoss(
             weight=cls_weight, gamma_per_class=gamma_per_class,
             label_smoothing=label_smoothing)
-        self.pinball         = PinballLoss(future_bars=future_bars)
-        self.aux_fn          = AuxLoss()
-        self.dir_w           = direction_weight
-        self.reg_loss_weight = reg_loss_weight
-        self.aux_loss_weight = aux_loss_weight
+        self.ohlc_loss = OHLCLossV2(             # v3.16: OHLCLossV2 вместо PinballLoss
+            delta=huber_delta, constraint_w=0.3)
+        self.aux_fn    = AuxLoss()
+        self.dir_w             = direction_weight
+        self.reg_loss_weight   = reg_loss_weight
+        self.aux_loss_weight   = aux_loss_weight
 
     def forward(self, logits, cls_y, ohlc_pred, ohlc_true,
                 aux_pred=None, aux_true=None):
         cls_loss = self.focal(logits, cls_y)
 
         n        = min(ohlc_pred.shape[1], ohlc_true.shape[1])
-        reg_loss = self.pinball(ohlc_pred, ohlc_true[:, :n])
+        reg_loss = self.ohlc_loss(ohlc_pred, ohlc_true[:, :n])  # v3.16
 
-        if self.dir_w > 0 and ohlc_pred.shape[-1] >= 4:
+        # Direction loss на ΔClose первого бара (индекс 3: [O,H,L,C])
+        if self.dir_w > 0 and ohlc_pred.shape[1] >= 4:
             dir_loss = F.binary_cross_entropy_with_logits(
                 ohlc_pred[:, 3], (ohlc_true[:, 3] > 0).float())
             reg_loss = reg_loss + self.dir_w * dir_loss
@@ -492,10 +567,10 @@ def mixup_data(imgs, nums, cls_y, ohlc_y, ctx, alpha=0.2,
     lam = np.random.beta(alpha, alpha)
     B   = cls_y.shape[0]
     idx = torch.randperm(B, device=cls_y.device)
-    m_imgs   = {W: lam * imgs[W]   + (1 - lam) * imgs[W][idx]   for W in imgs}
-    m_nums   = ({W: lam * nums[W]  + (1 - lam) * nums[W][idx]   for W in nums}
+    m_imgs   = {W: lam * imgs[W] + (1 - lam) * imgs[W][idx] for W in imgs}
+    m_nums   = ({W: lam * nums[W] + (1 - lam) * nums[W][idx] for W in nums}
                 if nums is not None else None)
-    m_ohlc   = lam * ohlc_y   + (1 - lam) * ohlc_y[idx]
+    m_ohlc   = lam * ohlc_y + (1 - lam) * ohlc_y[idx]
     m_ctx    = (lam * ctx    + (1 - lam) * ctx[idx])    if ctx    is not None else None
     m_hourly = (lam * hourly + (1 - lam) * hourly[idx]) if hourly is not None else None
     m_aux    = (lam * aux_y  + (1 - lam) * aux_y[idx])  if aux_y  is not None else None
@@ -507,14 +582,14 @@ def mixup_data(imgs, nums, cls_y, ohlc_y, ctx, alpha=0.2,
 # ────────────────────────────────────────────────────────────
 
 def _make_loader_v3(dataset, batch_size, shuffle=False,
-                    num_workers=4, sampler=None):
+                    num_workers=0, sampler=None):      # v3.16: default num_workers=0
     return DataLoader(
         dataset, batch_size=batch_size,
         shuffle=shuffle and sampler is None,
         sampler=sampler,
         num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=num_workers > 0,
+        pin_memory=(num_workers > 0),
+        persistent_workers=(num_workers > 0),
         drop_last=shuffle or sampler is not None,
     )
 
@@ -532,18 +607,18 @@ def evaluate_multiscale_v3(model, te_ds, y_test, ctx_dim,
     loader = _make_loader_v3(te_ds, batch_size=256, shuffle=False, num_workers=0)
     model.eval()
 
-    all_preds, all_trues         = [], []
+    all_preds, all_trues     = [], []
     all_ohlc_pred, all_ohlc_true = [], []
 
     with torch.no_grad():
         for batch in loader:
             imgs_dict, num_dict, cls_y, ohlc_y, ctx, hourly_data, *_ = batch
-            imgs   = {W: imgs_dict[W].to(device) for W in SCALES}
-            ctx_t  = ctx.to(device) if ctx_dim > 0 else None
-            ht     = (hourly_data.to(device)
-                      if use_hourly and hourly_data is not None else None)
-            nums   = ({W: num_dict[W].to(device) for W in SCALES}
-                      if num_dict is not None else None)
+            imgs  = {W: imgs_dict[W].to(device) for W in SCALES}
+            ctx_t = ctx.to(device) if ctx_dim > 0 else None
+            ht    = (hourly_data.to(device)
+                     if use_hourly and hourly_data is not None else None)
+            nums  = ({W: num_dict[W].to(device) for W in SCALES}
+                     if num_dict is not None else None)
             lo, op, _ = model(imgs, nums, ctx_t, hourly=ht)
             all_preds.extend(lo.argmax(1).cpu().numpy())
             all_trues.extend(cls_y.numpy())
@@ -558,25 +633,45 @@ def evaluate_multiscale_v3(model, te_ds, y_test, ctx_dim,
     print(classification_report(trues, preds,
                                  target_names=['UP', 'FLAT', 'DOWN'],
                                  digits=4, zero_division=0))
-    n_cols = min(ohlc_p.shape[1], 4)
-    mae    = np.abs(ohlc_p[:, :n_cols] - ohlc_t[:, :n_cols]).mean(0)
-    print('\n  OHLC MAE:')
-    for i, nm in enumerate(['ΔOpen', 'ΔHigh', 'ΔLow', 'ΔClose'][:n_cols]):
-        print(f'    {nm}: {mae[i]:.4f}')
 
+    # v3.16: Per-bar MAE таблица
+    n_bars = ohlc_p.shape[1] // 4
+    print(f'\n  OHLC MAE по барам (всего {n_bars} bars):')
+    print(f'  {"Bar":>4}  {"ΔOpen":>8}  {"ΔHigh":>8}  {"ΔLow":>8}  {"ΔClose":>8}')
+    for bar in range(n_bars):
+        s     = bar * 4
+        p_bar = ohlc_p[:, s:s + 4]
+        t_bar = ohlc_t[:, s:s + 4]
+        if p_bar.shape[1] < 4:
+            break
+        mae_b = np.abs(p_bar - t_bar).mean(0)
+        print(f'  {bar + 1:>4}  {mae_b[0]:>8.4f}  {mae_b[1]:>8.4f}  '
+              f'{mae_b[2]:>8.4f}  {mae_b[3]:>8.4f}')
+
+    # Direction accuracy на Close bar1
     dir_acc = 0.5
     if ohlc_p.shape[1] >= 4:
         dir_acc = float((np.sign(ohlc_p[:, 3]) == np.sign(ohlc_t[:, 3])).mean())
-        print(f'  Direction accuracy: {dir_acc:.4f}')
+        print(f'\n  Direction accuracy (ΔClose bar1): {dir_acc:.4f}')
+
+    # v3.16: H/L violation rate — насколько часто модель нарушает физику свечи
+    if ohlc_p.shape[1] >= 4:
+        O_p, H_p, L_p, C_p = ohlc_p[:, 0], ohlc_p[:, 1], ohlc_p[:, 2], ohlc_p[:, 3]
+        h_viol = (H_p < np.maximum(O_p, C_p)).mean()
+        l_viol = (L_p > np.minimum(O_p, C_p)).mean()
+        print(f'  H violation rate: {h_viol:.2%}  '
+              f'L violation rate: {l_viol:.2%}  '
+              f'(цель: <1% к концу обучения)')
 
     if save_json:
         from sklearn.metrics import f1_score
         result = {
             'accuracy': float((preds == trues).mean()),
             'macro_f1': float(f1_score(trues, preds,
-                                       average='macro', zero_division=0)),
+                                        average='macro', zero_division=0)),
             'dir_acc':  dir_acc,
-            'ohlc_mae': mae.tolist(),
+            'ohlc_mae': np.abs(ohlc_p[:, :4] - ohlc_t[:, :4]).mean(0).tolist()
+                        if ohlc_p.shape[1] >= 4 else [],
         }
         with open(save_json, 'w') as f:
             json.dump(result, f, indent=2)
