@@ -73,7 +73,7 @@ class MLConfig:
     tickers: list = None
     interval: str = "1d"
     days_back: int = 3650
-    future_bars: int = 5
+    future_bars: int = 1
     profit_thr: float = 0.010
     loss_thr: float = -0.010
 
@@ -114,7 +114,7 @@ class MLConfig:
     adaptive_min_thr: float = 0.004
 
     # ── ATR-адаптивная разметка v3.4 ────────────────────────────
-    label_atr_k: float = 0.7  # NEW: порог = atr_k * ATR(14) / close
+    label_atr_k: float = 0.3  # NEW: порог = atr_k * ATR(14) / close
 
     def __post_init__(self):
         if self.tickers is None:

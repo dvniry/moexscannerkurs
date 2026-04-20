@@ -1,15 +1,13 @@
 # ml/dataset_v3.py
-"""Мультимасштабный датасет v3.3 — полная версия.
+"""Мультимасштабный датасет v3.4.1 — fix DWT look-ahead leak.
 
-Изменения v3.3:
-- [3.1] wavelet_denoise(): DWT db4, MAD-порог на close перед индикаторами
-- [3.2] RobustScaler fit на первых 70% тикера (no leakage)
-- [3.3] 7 новых признаков: volume_imbalance, overnight_gap, williams_r,
-        cci, rolling_skew5, spread_hl_norm, week_number → 37 cols total
-- [2.4] aux labels (vol, skew) → 7-кортеж из __getitem__
-- build_full_multiscale_dataset_v3 обновлён под 7-кортеж
-- _cache_dir() → "ml/cache_v3" (совместим со старым кэшем)
-  aux_{ticker}.npy отсутствует → автоматический rebuild
+Изменения v3.4.1 (патч поверх v3.4):
+- [LEAK FIX] add_indicators() больше НЕ применяет DWT к полной серии close.
+  Ранее pywt.wavedec на всей серии → значение в точке t зависело от t+k.
+  Теперь c = df["close"] напрямую. Если нужен шумоподавитель —
+  применяйте WaveletDenoise как слой модели (там окно фиксировано).
+- CACHE_VERSION остаётся "v3.4" (структура не менялась), но индикаторы
+  пересчитаются → требуется один --rebuild после обновления.
 """
 import os
 os.environ["GRPC_DNS_RESOLVER"] = "native"
@@ -21,7 +19,7 @@ if os.path.exists(_cert):
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Tuple, Optional
+from typing import Optional
 import torch
 from torch.utils.data import Dataset as TorchDataset
 
@@ -38,64 +36,56 @@ from ml.hourly_encoder import (
     render_hourly_candles, N_HOURLY_CHANNELS,
     N_HOURS_PER_DAY, N_INTRADAY_DAYS,
 )
+
 # ══════════════════════════════════════════════════════════════════
 # [3.4] Heikin-Ashi — 4-й канал свечного рендера
 # ══════════════════════════════════════════════════════════════════
 
-CACHE_VERSION = "v3.4"          # при смене → auto-rebuild (проверка по каналам)
+CACHE_VERSION = "v3.4"
 N_RENDER_CHANNELS = _N_RENDER_CHANNELS_ORIG + 1   # 3 → 4
 
 
 def render_candles(df_window) -> np.ndarray:
-    """Обёртка над candle_render_v2: добавляет 4-й канал — нормализованный HA-close.
-
-    Вход: DataFrame с колонками open/high/low/close (любой длины).
-    Выход: [H, W, 4] — оригинальные 3 канала + Heikin-Ashi.
-    """
-    orig = _render_candles_orig(df_window)          # [H, W, 3]
+    """Обёртка над candle_render_v2: добавляет 4-й канал — нормализованный HA-close."""
+    orig = _render_candles_orig(df_window)
 
     o = df_window["open"].values.astype(np.float64)
     h = df_window["high"].values.astype(np.float64)
     l = df_window["low"].values.astype(np.float64)
     c = df_window["close"].values.astype(np.float64)
 
-    # HA close = (O+H+L+C)/4
     ha_close = (o + h + l + c) / 4.0
-
-    # HA open[i] = (ha_open[i-1] + ha_close[i-1]) / 2
     ha_open = np.empty(len(o), dtype=np.float64)
     ha_open[0] = (o[0] + c[0]) / 2.0
     for i in range(1, len(o)):
         ha_open[i] = (ha_open[i - 1] + ha_close[i - 1]) / 2.0
 
-    price_min = l.min()
-    price_max = h.max()
+    price_min = l.min(); price_max = h.max()
     rng = max(price_max - price_min, 1e-8)
-    ha_norm = ((ha_close - price_min) / rng).astype(np.float32)  # [T]
+    ha_norm = ((ha_close - price_min) / rng).astype(np.float32)
 
     H_dim, W_dim, _ = orig.shape
     x_src = np.linspace(0, 1, len(ha_norm))
     x_dst = np.linspace(0, 1, W_dim)
-    ha_col = np.interp(x_dst, x_src, ha_norm).astype(np.float32)   # [W_dim]
-    ha_channel = np.tile(ha_col[np.newaxis, :, np.newaxis], (H_dim, 1, 1))  # [H,W,1]
+    ha_col = np.interp(x_dst, x_src, ha_norm).astype(np.float32)
+    ha_channel = np.tile(ha_col[np.newaxis, :, np.newaxis], (H_dim, 1, 1))
 
-    return np.concatenate([orig, ha_channel], axis=2)   # [H, W, 4]
+    return np.concatenate([orig, ha_channel], axis=2)
 
-# ══════════════════════════════════════════════════════════════════
-# (H, W, C) → (C, W)
-# ══════════════════════════════════════════════════════════════════
 
 def _hwc_to_cw(img: np.ndarray) -> np.ndarray:
     return img.mean(axis=0).T.astype(np.float32)
 
 
 # ══════════════════════════════════════════════════════════════════
-# [3.1] Wavelet Denoising
+# v3.4.1 — wavelet_denoise оставлен как утилита, НЕ применяется в add_indicators
 # ══════════════════════════════════════════════════════════════════
 
 def wavelet_denoise(series: np.ndarray,
                     wavelet: str = "db4", level: int = 3) -> np.ndarray:
-    """DWT денойзинг с MAD-порогом. Fallback: возвращает series без изменений."""
+    """DWT денойзинг с MAD-порогом. НЕ-каузальный — не использовать для фичей!
+    Оставлен для возможного применения к историческим исследованиям.
+    """
     try:
         import pywt
         arr = np.asarray(series, dtype=np.float64)
@@ -112,30 +102,20 @@ def wavelet_denoise(series: np.ndarray,
 
 
 # ══════════════════════════════════════════════════════════════════
-# [3.3] Индикаторы (37 признаков)
+# Индикаторы (37 признаков) — v3.4.1 БЕЗ DWT LEAK
 # ══════════════════════════════════════════════════════════════════
 
 INDICATOR_COLS = [
-    # Trend (relative)
     "ema9", "ema21", "ema50", "macd", "macd_sig",
-    # Momentum
     "rsi", "rsi_pct", "stoch",
-    # Bollinger (relative)
     "bb_upper", "bb_lower", "bb_pct",
-    # Volatility
     "atr", "range_norm", "range_atr_ratio",
-    # Volume
     "vol_ratio", "sent_vol_price",
-    # ROC
     "roc5", "roc10",
-    # Fibonacci
     "dist_fib_382", "dist_fib_618",
-    # Price
     "close_rel",
-    # Market / Calendar
     "rs_5d", "rs_20d", "imoex_ret5", "imoex_ret20", "imoex_vol20",
     "day_of_week", "month", "is_monday", "is_friday",
-    # NEW v3.3 (+7)
     "volume_imbalance",
     "overnight_gap",
     "williams_r",
@@ -143,14 +123,14 @@ INDICATOR_COLS = [
     "rolling_skew5",
     "spread_hl_norm",
     "week_number",
-]  # len = 37
+]
 
 
 def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame:
-    # [3.1] DWT-денойзинг close
-    raw_close     = df["close"].astype(float).values
-    denoised_close = wavelet_denoise(raw_close)
-    c = pd.Series(denoised_close, index=df.index, dtype=float)
+    # ── v3.4.1 FIX: БЕЗ DWT LEAK ──
+    # Раньше: denoised = wavelet_denoise(df["close"]) — НЕ каузально!
+    # Теперь: работаем с сырым close. Все индикаторы — каузальные по построению.
+    c = df["close"].astype(float)
 
     h = df["high"].astype(float)
     l = df["low"].astype(float)
@@ -159,15 +139,16 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
     c_safe = c.clip(lower=1e-9)
 
     # ── Trend ──
-    ema9_abs  = c.ewm(span=9).mean()
-    ema21_abs = c.ewm(span=21).mean()
-    ema50_abs = c.ewm(span=50).mean()
+    ema9_abs  = c.ewm(span=9,  adjust=False).mean()
+    ema21_abs = c.ewm(span=21, adjust=False).mean()
+    ema50_abs = c.ewm(span=50, adjust=False).mean()
     df["ema9"]  = (ema9_abs  - c) / c_safe
     df["ema21"] = (ema21_abs - c) / c_safe
     df["ema50"] = (ema50_abs - c) / c_safe
-    macd_raw    = c.ewm(span=12).mean() - c.ewm(span=26).mean()
+    macd_raw    = (c.ewm(span=12, adjust=False).mean()
+                 - c.ewm(span=26, adjust=False).mean())
     df["macd"]     = macd_raw / c_safe
-    df["macd_sig"] = macd_raw.ewm(span=9).mean() / c_safe
+    df["macd_sig"] = macd_raw.ewm(span=9, adjust=False).mean() / c_safe
 
     # ── Momentum ──
     delta  = c.diff()
@@ -181,8 +162,8 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
 
     low14  = l.rolling(14).min()
     high14 = h.rolling(14).max()
-    df["stoch"]     = (c - low14) / (high14 - low14 + 1e-9)
-    df["williams_r"] = (high14 - c) / (high14 - low14 + 1e-9) * (-100)  # NEW
+    df["stoch"]      = (c - low14) / (high14 - low14 + 1e-9)
+    df["williams_r"] = (high14 - c) / (high14 - low14 + 1e-9) * (-100)
 
     # ── Bollinger ──
     mid = c.rolling(20).mean()
@@ -193,21 +174,20 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
     df["bb_lower"] = (c - bb_lower_abs) / c_safe
     df["bb_pct"]   = (c - bb_lower_abs) / (bb_upper_abs - bb_lower_abs + 1e-9)
 
-    # ── CCI ── NEW
+    # ── CCI ──
     sma20    = c.rolling(20).mean()
     mean_dev = (c - sma20).abs().rolling(20).mean().clip(lower=1e-9)
     df["cci"] = (c - sma20) / (0.015 * mean_dev)
 
     # ── Volatility ──
-    tr  = pd.concat([h - l,
-                     (h - c.shift()).abs(),
-                     (l - c.shift()).abs()], axis=1).max(axis=1)
+    tr = pd.concat([h - l,
+                    (h - c.shift()).abs(),
+                    (l - c.shift()).abs()], axis=1).max(axis=1)
     atr_abs = tr.rolling(14).mean()
     df["atr"]              = atr_abs / c_safe
     df["range_norm"]       = (h - l) / c_safe
     df["range_atr_ratio"]  = (h - l) / atr_abs.clip(lower=1e-9)
 
-    # spread_hl_norm NEW
     roll5_std = c.rolling(5).std().clip(lower=1e-9)
     df["spread_hl_norm"] = (h - l) / roll5_std
 
@@ -218,17 +198,13 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
     df["ret1"]           = c.pct_change()
     df["sent_vol_price"] = df["ret1"] * df["vol_ratio"]
 
-    # volume_imbalance NEW
     df["volume_imbalance"] = ((c - o) / (h - l + 1e-9)) * df["vol_ratio"]
-
-    # overnight_gap NEW
-    df["overnight_gap"] = (o / c.shift(1).clip(lower=1e-9)) - 1.0
+    df["overnight_gap"]    = (o / c.shift(1).clip(lower=1e-9)) - 1.0
 
     # ── ROC ──
     df["roc5"]  = c.pct_change(5)
     df["roc10"] = c.pct_change(10)
 
-    # rolling_skew5 NEW
     df["rolling_skew5"] = c.pct_change().rolling(5).skew().fillna(0.0)
 
     # ── Fibonacci ──
@@ -238,14 +214,15 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
     df["dist_fib_382"] = (c - (roll_max - 0.382 * fib_range)) / fib_range
     df["dist_fib_618"] = (c - (roll_max - 0.618 * fib_range)) / fib_range
 
-    # close_rel
     df["close_rel"] = c.pct_change(1).fillna(0.0)
 
     # ── RS + IMOEX ──
     if imoex is not None:
         idx_c = imoex["close"].astype(float).reindex(df.index).ffill()
-        df["rs_5d"]       = (c.pct_change(5)  / idx_c.pct_change(5).abs().clip(lower=1e-9)).clip(-10, 10)
-        df["rs_20d"]      = (c.pct_change(20) / idx_c.pct_change(20).abs().clip(lower=1e-9)).clip(-10, 10)
+        df["rs_5d"]       = (c.pct_change(5)  /
+                             idx_c.pct_change(5).abs().clip(lower=1e-9)).clip(-10, 10)
+        df["rs_20d"]      = (c.pct_change(20) /
+                             idx_c.pct_change(20).abs().clip(lower=1e-9)).clip(-10, 10)
         df["imoex_ret5"]  = idx_c.pct_change(5)
         df["imoex_ret20"] = idx_c.pct_change(20)
         df["imoex_vol20"] = idx_c.pct_change().rolling(20).std()
@@ -331,10 +308,6 @@ def class_distribution(y: np.ndarray) -> None:
         print(f"  {name:4s}: {count:5d} ({count / total * 100:.1f}%)")
 
 
-# ══════════════════════════════════════════════════════════════════
-# _align_arrays — теперь 7-й аргумент aux
-# ══════════════════════════════════════════════════════════════════
-
 def _align_arrays(imgs, nums, cls, ohlc, ctx=None, hourly=None, aux=None):
     n = min(len(cls), len(ohlc))
     for W in SCALES:
@@ -351,10 +324,6 @@ def _align_arrays(imgs, nums, cls, ohlc, ctx=None, hourly=None, aux=None):
     return imgs, nums, cls, ohlc, ctx, hourly, aux
 
 
-# ══════════════════════════════════════════════════════════════════
-# Пути кэша — СОВМЕСТИМ со старым "cache_v3"
-# ══════════════════════════════════════════════════════════════════
-
 def _cache_dir():
     d = "ml/cache_v3"; os.makedirs(d, exist_ok=True); return d
 
@@ -364,12 +333,12 @@ def _cls_path(ticker):    return f"{_cache_dir()}/cls_{ticker}.npy"
 def _ohlc_path(ticker):   return f"{_cache_dir()}/ohlc_{ticker}.npy"
 def _ctx_path(ticker):    return f"{_cache_dir()}/ctx_{ticker}.npy"
 def _hourly_path(ticker): return f"{_cache_dir()}/hourly_{ticker}.npy"
-def _aux_path(ticker):    return f"{_cache_dir()}/aux_{ticker}.npy"   # NEW v3.3
+def _aux_path(ticker):    return f"{_cache_dir()}/aux_{ticker}.npy"
 
 
-# ══════════════════════════════════════════════════════════════════
-# Часовые свечи — БЕЗ ИЗМЕНЕНИЙ
-# ══════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────
+# Часовые свечи
+# ──────────────────────────────────────────────────────────────────
 
 def _load_hourly_candles(client, figi: str, days_back: int = None):
     import time as _time
@@ -412,7 +381,7 @@ def _load_hourly_candles(client, figi: str, days_back: int = None):
 def _build_hourly_for_day(hourly_by_date, daily_date, d_high, d_low, d_close):
     if hourly_by_date is None:
         return np.zeros((N_HOURLY_CHANNELS, N_HOURS_PER_DAY), dtype=np.float32)
-    day   = daily_date.date() if hasattr(daily_date, "date") else pd.Timestamp(daily_date).date()
+    day = daily_date.date() if hasattr(daily_date, "date") else pd.Timestamp(daily_date).date()
     day_h = hourly_by_date.get(day)
     if day_h is None or len(day_h) == 0:
         return np.zeros((N_HOURLY_CHANNELS, N_HOURS_PER_DAY), dtype=np.float32)
@@ -489,9 +458,9 @@ def _load_daily_candles_chunked(client, figi: str, days_back: int = None) -> pd.
     return result
 
 
-# ══════════════════════════════════════════════════════════════════
-# Dataset (lazy) — возвращает 7-кортеж
-# ══════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────
+# Dataset
+# ──────────────────────────────────────────────────────────────────
 
 class LazyMultiScaleDatasetV3(TorchDataset):
     def __init__(self, records: list, ctx_dim: int, use_hourly: bool = True):
@@ -568,83 +537,72 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         else:
             hourly = torch.zeros(N_INTRADAY_DAYS, N_HOURLY_CHANNELS, N_HOURS_PER_DAY)
 
-        # [2.4] Aux labels
         if data["aux"] is not None:
             aux_raw = data["aux"][local_idx]
-            aux_y   = torch.tensor([
+            # aux_raw может быть [vol, skew] (старый кэш) или [vol, skew, atr] (новый)
+            aux_y = torch.tensor([
                 float(np.clip(aux_raw[0] * 100.0, 0., 10.)),
                 float(np.clip(aux_raw[1], -3., 3.)),
             ]).float()
+            # atr_ratio хранится отдельно для бэктеста
+            # но не передаём в модель (она его не использует)
         else:
             aux_y = torch.zeros(2)
 
-        # 7-КОРТЕЖ — ключевое изменение
         return imgs, nums, cls_y, ohlc_y, ctx, hourly, aux_y
 
+
 # ══════════════════════════════════════════════════════════════════
-# [3.4] ATR-адаптивная разметка (заменяет фиксированный порог)
+# ATR-адаптивная разметка
 # ══════════════════════════════════════════════════════════════════
 
 def build_labels_atr(df: pd.DataFrame,
                      future_bars: int = None,
                      atr_k: float = None):
-    """ATR-адаптивная разметка классов.
-
-    Порог = atr_k * ATR(14) / close  (в долях от цены).
-    BUY  (0): ret > +thresh
-    SELL (2): ret < -thresh
-    HOLD (1): иначе
-
-    Возвращает tuple той же структуры, что build_ohlc_labels:
-        (ohlc_all, cls_all, valid_all, extra)
-    ohlc_all и valid_all берутся из оригинальной функции.
-    """
     if future_bars is None:
         future_bars = CFG.future_bars
     if atr_k is None:
         atr_k = CFG.label_atr_k
 
-    # ohlc + valid маски из стандартной функции (без утечки будущего)
     ohlc_all, _, valid_all, extra = build_ohlc_labels(df)
 
     c = df["close"].values.astype(np.float64)
     h = df["high"].values.astype(np.float64)
     l = df["low"].values.astype(np.float64)
 
-    # True Range
     tr = np.maximum(
         h[1:] - l[1:],
         np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1]))
     )
     tr = np.concatenate([[tr[0] if len(tr) else 0.0], tr])
 
-    # ATR(14) — экспоненциальная сглаживание (RMA-стиль как в TradingView)
     atr14 = np.zeros(len(c))
     if len(c) >= 14:
         atr14[13] = tr[:14].mean()
         for i in range(14, len(c)):
             atr14[i] = (atr14[i - 1] * 13.0 + tr[i]) / 14.0
-        atr14[:13] = atr14[13]   # backfill первых баров
+        atr14[:13] = atr14[13]
 
-    cls_all = np.ones(len(c), dtype=np.int64)   # HOLD по умолчанию
+    cls_all = np.ones(len(c), dtype=np.int64)
 
     for i in range(len(c) - future_bars):
         if not valid_all[i]:
             continue
         c_now = max(c[i], 1e-9)
-        thresh = atr_k * atr14[i] / c_now      # доля от цены
-        if thresh < 1e-5:                        # защита от нулевого ATR
+        thresh = atr_k * atr14[i] / c_now
+        if thresh < 1e-5:
             continue
         ret = (c[i + future_bars] - c_now) / c_now
         if ret > thresh:
-            cls_all[i] = 0   # BUY
+            cls_all[i] = 0
         elif ret < -thresh:
-            cls_all[i] = 2   # SELL
+            cls_all[i] = 2
 
-    return ohlc_all, cls_all, valid_all, extra 
+    return ohlc_all, cls_all, valid_all, extra
+
 
 # ══════════════════════════════════════════════════════════════════
-# Построение для одного тикера — возвращает 7-кортеж
+# Построение для одного тикера
 # ══════════════════════════════════════════════════════════════════
 
 def build_multiscale_dataset_v3(
@@ -656,21 +614,18 @@ def build_multiscale_dataset_v3(
     df    = add_indicators(df.copy(), imoex).dropna()
     W_max = max(SCALES); F = CFG.future_bars
 
-    # СТАЛО (v3.4) — проверяем, что каналы == N_RENDER_CHANNELS (4):
     def _cache_channels_valid(ticker: str) -> bool:
-        """True если кэшированные imgs имеют правильное число каналов."""
         p = _img_path(ticker, SCALES[0])
         if not os.path.exists(p):
             return False
         try:
             arr = np.load(p, mmap_mode="r")
-            # shape: [N, C, W] — ось 1 это каналы
             return arr.ndim == 3 and arr.shape[1] == N_RENDER_CHANNELS
         except Exception:
             return False
 
     cache_ok = (
-        _cache_channels_valid(ticker) and                           # [3.4] проверка каналов
+        _cache_channels_valid(ticker) and
         all(os.path.exists(_img_path(ticker, W)) for W in SCALES) and
         all(os.path.exists(_num_path(ticker, W)) for W in SCALES) and
         os.path.exists(_cls_path(ticker)) and
@@ -680,7 +635,7 @@ def build_multiscale_dataset_v3(
     )
 
     if cache_ok and not force_rebuild:
-        print(f"  Кэш v3.3 найден для {ticker}")
+        print(f"  Кэш v3.4 найден для {ticker}")
         imgs   = {W: np.load(_img_path(ticker, W)) for W in SCALES}
         nums   = {W: np.load(_num_path(ticker, W)) for W in SCALES}
         cls    = np.load(_cls_path(ticker))
@@ -703,37 +658,47 @@ def build_multiscale_dataset_v3(
         ctx = np.array(ctx_list, dtype=np.float32) if ctx_list else None
         return _align_arrays(imgs, nums, cls, ohlc, ctx, hourly, aux)
 
-    # ── Полное построение ──────────────────────────────────────────
-    ohlc_all, cls_all, valid_all, _ = build_labels_atr(df)
+    # ── Полное построение ──
+    ohlc_all, cls_all, valid_all, atr_ratio_full = build_labels_residual(
+        df, imoex=imoex)
+    # atr_ratio_full: [N] — ATR(14)/close для каждого бара (из build_ohlc_labels)
+
     nan_before = (~np.isfinite(ohlc_all)).sum()
     if nan_before > 0:
         for i in range(len(ohlc_all)):
-            if not np.isfinite(ohlc_all[i]).all(): valid_all[i] = False
+            if not np.isfinite(ohlc_all[i]).all():
+                valid_all[i] = False
         ohlc_all = np.nan_to_num(ohlc_all, nan=0., posinf=0., neginf=0.)
 
     scale_imgs = {W: [] for W in SCALES}
     scale_nums = {W: [] for W in SCALES}
-    ctx_list = []; y_cls_list = []; y_ohlc_list = []; valid_daily_indices = []
+    ctx_list = []; y_cls_list = []; y_ohlc_list = []
+    valid_daily_indices = []
 
-    # [3.2] RobustScaler: fit на первых 70% тикера
     num_arr      = df[INDICATOR_COLS].values.astype(np.float32)
     num_arr_safe = np.nan_to_num(num_arr, nan=0.)
     _train_end   = max(int(len(num_arr_safe) * 0.70), 10)
-    scaler       = RobustScaler()
+    assert _train_end < len(num_arr_safe), \
+        f"[LEAK] train_end={_train_end} >= len={len(num_arr_safe)}"
+    scaler   = RobustScaler()
     scaler.fit(num_arr_safe[:_train_end])
-    num_norm     = np.clip(scaler.transform(num_arr_safe), -10., 10.).astype(np.float32)
+    num_norm = np.clip(
+        scaler.transform(num_arr_safe), -10., 10.).astype(np.float32)
 
     total = len(df) - W_max - F
     for i, idx in enumerate(range(W_max, len(df) - F)):
-        if not valid_all[idx]: continue
-        if i % 100 == 0: print(f"  {ticker}: рендер v3.3 {i}/{total}", end="\r")
+        if not valid_all[idx]:
+            continue
+        if i % 100 == 0:
+            print(f"  {ticker}: рендер v3.4.1 {i}/{total}", end="\r")
         for W in SCALES:
             img_cw = _hwc_to_cw(render_candles(df.iloc[idx - W: idx]))
             if not np.isfinite(img_cw).all():
                 img_cw = np.nan_to_num(img_cw, nan=0., posinf=0., neginf=0.)
             scale_imgs[W].append(img_cw)
             scale_nums[W].append(num_norm[idx - W: idx])
-        if context is not None: ctx_list.append(context[idx])
+        if context is not None:
+            ctx_list.append(context[idx])
         y_cls_list.append(cls_all[idx])
         y_ohlc_list.append(ohlc_all[idx])
         valid_daily_indices.append(idx)
@@ -750,23 +715,32 @@ def build_multiscale_dataset_v3(
         print(f"  {ticker}: рендер часовых свечей...")
         hourly = _build_hourly_windows(hourly_df, df, valid_daily_indices)
 
-    # [2.4] Aux labels
+    # ── Aux labels: [vol, skew, atr_ratio] ──────────────────────
     close_arr = df["close"].values.astype(np.float64)
     log_rets  = np.diff(np.log(np.clip(close_arr, 1e-9, None)))
     aux_list  = []
+
     for idx in valid_daily_indices:
         end_idx = min(idx + F, len(log_rets))
         fut     = log_rets[idx: end_idx]
+
+        # atr_ratio для этого бара
+        atr_v = (float(atr_ratio_full[idx])
+                 if idx < len(atr_ratio_full) and np.isfinite(atr_ratio_full[idx])
+                 else 0.018)
+        atr_v = float(np.clip(atr_v, 0.001, 0.15))  # 0.1% - 15% диапазон
+
         if len(fut) < 2:
-            aux_list.append([0., 0.])
+            aux_list.append([0., 0., atr_v])
         else:
             vol  = float(np.std(fut))
             mean = np.mean(fut)
             m2   = np.mean((fut - mean) ** 2)
             m3   = np.mean((fut - mean) ** 3)
-            skew = float(m3 / (m2 ** 1.5 + 1e-12))
-            aux_list.append([vol, float(np.clip(skew, -5., 5.))])
-    aux = np.array(aux_list, dtype=np.float32)
+            skew = float(np.clip(m3 / (m2 ** 1.5 + 1e-12), -5., 5.))
+            aux_list.append([vol, skew, atr_v])
+
+    aux = np.array(aux_list, dtype=np.float32)  # [N, 3]
 
     result = _align_arrays(imgs, nums, cls, ohlc, ctx, hourly, aux)
     imgs, nums, cls, ohlc, ctx, hourly, aux = result
@@ -776,15 +750,12 @@ def build_multiscale_dataset_v3(
         np.save(_num_path(ticker, W), nums[W])
     np.save(_cls_path(ticker),  cls)
     np.save(_ohlc_path(ticker), ohlc)
-    np.save(_aux_path(ticker),  aux)
-    if hourly is not None: np.save(_hourly_path(ticker), hourly)
+    np.save(_aux_path(ticker),  aux)   # теперь [N, 3]
+    if hourly is not None:
+        np.save(_hourly_path(ticker), hourly)
 
     return imgs, nums, cls, ohlc, ctx, hourly, aux
 
-
-# ══════════════════════════════════════════════════════════════════
-# Точка входа — все тикеры (обновлён под 7-кортеж)
-# ══════════════════════════════════════════════════════════════════
 
 def build_full_multiscale_dataset_v3(
     force_rebuild: bool = False,
@@ -816,12 +787,10 @@ def build_full_multiscale_dataset_v3(
         raise RuntimeError(f"ticker_filter={ticker_filter} не совпал ни с одним тикером")
 
     for ticker in tickers_to_use:
-        # Проверяем кэш: aux файл обязателен
         has_aux = os.path.exists(_aux_path(ticker))
         if not force_rebuild and ticker_cache_valid(ticker, meta) and has_aux:
-            print(f"  {ticker}: кэш v3.3 актуален ✓")
+            print(f"  {ticker}: кэш v3.4 актуален ✓")
             cls = np.load(_cls_path(ticker), mmap_mode="r")
-            # санация ohlc
             ohlc_p = _ohlc_path(ticker)
             if os.path.exists(ohlc_p):
                 oc = np.load(ohlc_p, mmap_mode="r")
@@ -853,7 +822,6 @@ def build_full_multiscale_dataset_v3(
                 imoex_close=imoex["close"] if imoex is not None else None,
             ) if ctx_series is not None else None
 
-            # 7-КОРТЕЖ
             imgs, nums, cls, ohlc, ctx, hourly, aux = build_multiscale_dataset_v3(
                 df, imoex, ctx_feats, ticker=ticker,
                 hourly_df=hourly_df, force_rebuild=force_rebuild,
@@ -901,10 +869,6 @@ def _load_all_from_cache(meta: dict, use_hourly: bool = True):
     return dataset, y_all, ctx_dim, ticker_lengths
 
 
-# ══════════════════════════════════════════════════════════════════
-# Temporal split — БЕЗ ИЗМЕНЕНИЙ
-# ══════════════════════════════════════════════════════════════════
-
 def temporal_split(ticker_lengths, val_ratio=0.15, test_ratio=0.15, purge_bars=None):
     if purge_bars is None: purge_bars = CFG.future_bars
     idx_train = []; idx_val = []; idx_test = []
@@ -926,3 +890,76 @@ def temporal_split(ticker_lengths, val_ratio=0.15, test_ratio=0.15, purge_bars=N
     return (np.array(idx_train, dtype=np.int64),
             np.array(idx_val,   dtype=np.int64),
             np.array(idx_test,  dtype=np.int64))
+
+def build_labels_residual(df: pd.DataFrame,
+                          imoex: pd.DataFrame = None,
+                          future_bars: int = None,
+                          atr_k: float = None):
+    """v3.4.2: метки по residual return (stock - imoex).
+    
+    На h=1 residual даёт ~50/50 распределение UP/DOWN с предсказуемым
+    сигналом. Убирает bull-bias российского рынка (~55-65% UP на длинных
+    горизонтах, который перекрывает любой сигнал индикаторов).
+    """
+    if future_bars is None:
+        future_bars = CFG.future_bars
+    if atr_k is None:
+        atr_k = CFG.label_atr_k
+
+    ohlc_all, _, valid_all, extra = build_ohlc_labels(df)
+
+    c = df["close"].values.astype(np.float64)
+    h = df["high"].values.astype(np.float64)
+    l = df["low"].values.astype(np.float64)
+
+    # Market drift (IMOEX)
+    if imoex is not None:
+        idx_c = imoex["close"].astype(float).reindex(df.index).ffill()
+        idx_vals = idx_c.values.astype(np.float64)
+    else:
+        idx_vals = None
+        print("  [WARN] IMOEX не передан в build_labels_residual — "
+              "метки будут по raw return (с bull-bias)")
+
+    # ATR
+    tr = np.maximum(h[1:] - l[1:],
+                    np.maximum(np.abs(h[1:] - c[:-1]),
+                               np.abs(l[1:] - c[:-1])))
+    tr = np.concatenate([[tr[0] if len(tr) else 0.0], tr])
+    atr14 = np.zeros(len(c))
+    if len(c) >= 14:
+        atr14[13] = tr[:14].mean()
+        for i in range(14, len(c)):
+            atr14[i] = (atr14[i - 1] * 13.0 + tr[i]) / 14.0
+        atr14[:13] = atr14[13]
+
+    cls_all = np.ones(len(c), dtype=np.int64)   # HOLD по умолчанию
+
+    for i in range(len(c) - future_bars):
+        if not valid_all[i]:
+            continue
+        c_now = max(c[i], 1e-9)
+        c_fut = c[i + future_bars]
+        stock_ret = (c_fut - c_now) / c_now
+
+        # Residual
+        if idx_vals is not None:
+            idx_now = idx_vals[i]
+            idx_fut = idx_vals[min(i + future_bars, len(idx_vals) - 1)]
+            if np.isfinite(idx_now) and np.isfinite(idx_fut) and idx_now > 0:
+                market_ret = (idx_fut - idx_now) / idx_now
+                signal_ret = stock_ret - market_ret   # ← residual
+            else:
+                signal_ret = stock_ret
+        else:
+            signal_ret = stock_ret
+
+        thresh = atr_k * atr14[i] / c_now
+        if thresh < 1e-6:
+            continue
+        if signal_ret > thresh:
+            cls_all[i] = 0   # BUY (outperform market)
+        elif signal_ret < -thresh:
+            cls_all[i] = 2   # SELL (underperform market)
+
+    return ohlc_all, cls_all, valid_all, extra

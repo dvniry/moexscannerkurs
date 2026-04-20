@@ -1,18 +1,13 @@
 # ml/trainer_v3.py
-"""Trainer v3.16
+"""Trainer v3.17
 
-Изменения v3.16:
-- [5.1] CAWR T_0 увеличен 10 → 20 (совместимо с 60 эпохами)
-  Рестарты теперь на e20 и e60 — более плавное cosine-расписание
-- Увеличено _EPOCHS 50 → 60, patience_limit 8 → 12 (достаточно T_0=20)
-- MultiTaskLossV3 теперь использует OHLCLossV2 (huber_delta=0.5)
-- [MULTIPROCESSING FIX] _make_loader_v3: num_workers=0 по умолчанию
-  Убирает RuntimeError spawn на Windows без if __name__ guard
-- if __name__ guard + freeze_support() в точке входа
-
-Все улучшения v3.15 сохранены: TF-C pretrain, adaptive focal,
-label_smoothing=0.08, WRS sampler, trading-first metric,
-backbone weight_decay=5e-4, BiLSTM clip=0.5.
+Изменения v3.17:
+- Распаковка 4-кортежа forward: (logits, ohlc, aux, dir_logit).
+- dir_logit передаётся в criterion.
+- val_metric = dir_acc_head × prec_ud (честная метрика направления).
+- Убран WeightedRandomSampler — оставлен обычный shuffle + class_weights.
+- gamma_per_class=(2.0, 1.0, 2.0) — больше штраф UP/DOWN, меньше HOLD.
+- direction_weight=0.60, label_smoothing=0.05.
 """
 import os
 os.environ['GRPC_DNS_RESOLVER'] = 'native'
@@ -25,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-from torch.utils.data import WeightedRandomSampler
+from torch.utils.data import Subset
 
 _cert = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'russian_ca.cer'))
 if os.path.exists(_cert):
@@ -35,15 +30,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from ml.config import CFG, SCALES
 from ml.dataset_v3 import class_distribution
 
+
 # ────────────────────────────────────────────────────────────
-# [5.3] TF-C Pretraining
+# TF-C Pretraining
 # ────────────────────────────────────────────────────────────
 
 def _pretrain_tfc(model, tr_loader, device, n_epochs=5, lr=3e-4):
-    """[5.3] Time-Frequency Consistency pretraining (self-supervised).
-    Модель учится: temporal-repr ≈ freq-repr одного ряда.
-    NT-Xent loss на парах (aug_time, aug_freq). Меток не нужно.
-    """
     from ml.multiscale_cnn_v3 import TRUNK_OUT
     W_short = min(SCALES)
 
@@ -52,7 +44,7 @@ def _pretrain_tfc(model, tr_loader, device, n_epochs=5, lr=3e-4):
     ).to(device)
 
     for name, p in model.named_parameters():
-        if any(k in name for k in ('cls_head', 'ohlc_head', 'aux_head')):
+        if any(k in name for k in ('cls_head', 'ohlc_head', 'aux_head', 'dir_head')):
             p.requires_grad_(False)
 
     params = ([p for p in model.parameters() if p.requires_grad]
@@ -109,10 +101,6 @@ def _pretrain_tfc(model, tr_loader, device, n_epochs=5, lr=3e-4):
     print('  [TF-C] Pretrain done.')
 
 
-# ────────────────────────────────────────────────────────────
-# Utils
-# ────────────────────────────────────────────────────────────
-
 def _init_cls_head(model):
     for name, p in model.cls_head.named_parameters():
         if p.ndim >= 2:
@@ -129,34 +117,19 @@ def _init_cls_head(model):
 def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 criterion, device, n_epochs, patience_limit,
                 save_path, phase_name, ctx_dim, use_hourly,
-                accum_steps=2, use_mixup=True, mixup_alpha=0.2):
+                accum_steps=2, use_mixup=False, mixup_alpha=0.0):
     from ml.multiscale_cnn_v3 import mixup_data
-    from sklearn.metrics import f1_score
+    from sklearn.metrics import f1_score, precision_score
 
     best_metric   = 0.0
     patience      = 0
-    DEAD_STREAK_LIMIT = 50
-    zero_grad_streak  = 0
 
     seq_params = []
     for _, module in model.named_modules():
         if isinstance(module, nn.LSTM):
             seq_params.extend(list(module.parameters()))
 
-    def _reset_cls_head_full(opt):
-        with torch.no_grad():
-            for name, p in model.named_parameters():
-                if 'cls_head' in name:
-                    (nn.init.xavier_uniform_(p, gain=0.2)
-                     if 'weight' in name else nn.init.zeros_(p))
-        for group in opt.param_groups:
-            if group.get('name') == 'cls_head':
-                for p in group['params']:
-                    opt.state.pop(p, None)
-        print('  [RECOVERY] Dead gradient → reset cls_head + optimizer state')
-
     for epoch in range(1, n_epochs + 1):
-        # [5.2] Adaptive gamma
         criterion.focal.set_gamma(epoch, warmup_epochs=10)
 
         model.train(); criterion.train()
@@ -180,16 +153,18 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 print('\n  [DBG] ── Диагностика первого батча ──')
                 for W, t in imgs.items():
                     print(f'  [DBG] imgs[{W}]: shape={t.shape} '
-                          f'nan={torch.isnan(t).any().item()} '
-                          f'min={t.min():.3f} max={t.max():.3f}')
+                          f'nan={torch.isnan(t).any().item()}')
                 with torch.no_grad():
-                    lo_d, op_d, _ = model(imgs, nums, ctx_t, hourly=hourly_t)
+                    lo_d, op_d, _, dir_d = model(imgs, nums, ctx_t, hourly=hourly_t)
                     lo_d = lo_d.float().clamp(-15., 15.).nan_to_num(0.)
                     l, lc, lr2, la = criterion(
-                        lo_d, cls_y, op_d.float(), ohlc_y.float())
+                        lo_d, cls_y, op_d.float(), ohlc_y.float(),
+                        dir_logit=dir_d)
                 print(f'  [DBG] loss={l.item():.4f} cls={lc.item():.4f} '
                       f'reg={lr2.item():.4f} aux={la.item():.4f}')
-                print(f'  [DBG] Scheduler: CAWR T_0=20 T_mult=2')
+                print(f'  [DBG] dir_logit mean={dir_d.mean():.3f} '
+                      f'std={dir_d.std():.3f} '
+                      f'P(up)_mean={torch.sigmoid(dir_d).mean():.3f}')
                 print('  [DBG] ───────────────────────────────────\n')
 
             if use_mixup and mixup_alpha > 0:
@@ -197,20 +172,22 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                  m_ctx, lam, m_hourly, m_aux) = mixup_data(
                     imgs, nums, cls_y, ohlc_y.float(),
                     ctx_t, mixup_alpha, hourly=hourly_t)
-                lo, op, aux = model(m_imgs, m_nums, m_ctx, hourly=m_hourly)
+                lo, op, aux, dir_l = model(m_imgs, m_nums, m_ctx, hourly=m_hourly)
                 lo = lo.float().clamp(-15., 15.).nan_to_num(nan=0.)
                 op = op.float().nan_to_num(nan=0.)
-                la_l, lca, lra, _ = criterion(lo, cls_a, op, m_ohlc)
-                lb_l, lcb, lrb, _ = criterion(lo, cls_b, op, m_ohlc)
+                dir_l = dir_l.float().clamp(-15., 15.).nan_to_num(nan=0.)
+                la_l, lca, lra, _ = criterion(lo, cls_a, op, m_ohlc, dir_logit=dir_l)
+                lb_l, lcb, lrb, _ = criterion(lo, cls_b, op, m_ohlc, dir_logit=dir_l)
                 loss = lam * la_l + (1 - lam) * lb_l
                 lcls = lam * lca  + (1 - lam) * lcb
                 lreg = lam * lra  + (1 - lam) * lrb
             else:
-                lo, op, aux = model(imgs, nums, ctx_t, hourly=hourly_t)
+                lo, op, aux, dir_l = model(imgs, nums, ctx_t, hourly=hourly_t)
                 lo = lo.float().clamp(-15., 15.).nan_to_num(nan=0.)
                 op = op.float().nan_to_num(nan=0.)
+                dir_l = dir_l.float().clamp(-15., 15.).nan_to_num(nan=0.)
                 loss, lcls, lreg, _ = criterion(
-                    lo, cls_y, op, ohlc_y.float())
+                    lo, cls_y, op, ohlc_y.float(), dir_logit=dir_l)
 
             if not torch.isfinite(loss):
                 print(f'  [WARN] e={epoch} s={step} loss=nan — пропускаем')
@@ -234,48 +211,26 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 grad_norm = nn.utils.clip_grad_norm_(trainable, max_norm=1.0)
 
                 if step % 100 == 0:
-                    cls_gn = sum(
-                        p.grad.norm().item() ** 2
-                        for p in cls_head_ps
-                        if p.grad is not None
-                        and torch.isfinite(p.grad).all()) ** 0.5
                     print(f'  [GRAD] e={epoch} s={step} '
-                          f'grad_norm={grad_norm:.3f} '
-                          f'cls_head_gn={cls_gn:.4f}')
+                          f'grad_norm={grad_norm:.3f}')
 
                 optimizer.step(); optimizer.zero_grad()
-
-                gn = float(grad_norm)
-                if gn < 1e-7:
-                    zero_grad_streak += 1
-                    if zero_grad_streak >= DEAD_STREAK_LIMIT:
-                        _reset_cls_head_full(optimizer)
-                        zero_grad_streak = -100
-                else:
-                    zero_grad_streak = (0 if zero_grad_streak >= 0
-                                        else zero_grad_streak + 1)
 
             if step % 200 == 0 and _last_lo is not None:
                 with torch.no_grad():
                     probs    = torch.softmax(_last_lo.float(), dim=1)
                     pred_cls = probs.argmax(dim=1)
-                    pt   = [probs[_last_cls_y == c, c].mean().item()
-                            if (_last_cls_y == c).any() else -1.
-                            for c in range(3)]
-                    dist = [(pred_cls == c).float().mean().item()
-                            for c in range(3)]
+                    dist = [(pred_cls == c).float().mean().item() for c in range(3)]
                     tr_acc = (pred_cls == _last_cls_y).float().mean().item()
-                    g_str  = '[' + ','.join(f'{g:.2f}'
-                                            for g in criterion.focal.gamma) + ']'
-                    print(f'  [FOCAL] e={epoch} s={step} gamma={g_str} '
-                          f'pt: BUY={pt[0]:.3f} HOLD={pt[1]:.3f} SELL={pt[2]:.3f} | '
-                          f'dist: BUY={dist[0]:.3f} HOLD={dist[1]:.3f} SELL={dist[2]:.3f} | '
+                    print(f'  [DIST] e={epoch} s={step} '
+                          f'BUY={dist[0]:.3f} HOLD={dist[1]:.3f} SELL={dist[2]:.3f} | '
                           f'tr_acc={tr_acc:.3f}')
 
-        # ── Val loop ─────────────────────────────────────────
+        # ── Val loop ────────────────────────────────────────
         model.eval(); criterion.eval()
         val_preds = []; val_trues = []
         val_ohlc_pred = []; val_ohlc_true = []
+        val_dir_prob = []
 
         with torch.no_grad():
             for batch in val_loader:
@@ -287,11 +242,12 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                             if (use_hourly and hourly_data is not None) else None)
                 nums = ({W: num_dict[W].to(device) for W in SCALES}
                         if num_dict is not None else None)
-                lo, op, _ = model(imgs, nums, ctx_t, hourly=hourly_t)
+                lo, op, _, dir_l = model(imgs, nums, ctx_t, hourly=hourly_t)
                 val_preds.extend(lo.argmax(1).cpu().numpy())
                 val_trues.extend(cls_y.numpy())
                 val_ohlc_pred.append(op.cpu().float().numpy())
                 val_ohlc_true.append(ohlc_y.float().numpy())
+                val_dir_prob.append(torch.sigmoid(dir_l).cpu().numpy())
 
         vp = np.array(val_preds); vt = np.array(val_trues)
         val_acc   = (vp == vt).mean()
@@ -301,31 +257,44 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
 
         ohlc_p_np = np.concatenate(val_ohlc_pred, axis=0)
         ohlc_t_np = np.concatenate(val_ohlc_true, axis=0)
-        if ohlc_p_np.shape[1] > 3:
-            dir_acc_ohlc = float(
-                (np.sign(ohlc_p_np[:, 3]) ==
-                 np.sign(ohlc_t_np[:, 3])).mean())
-            ohlc_mae = float(
-                np.abs(ohlc_p_np[:, :4] - ohlc_t_np[:, :4]).mean())
-        else:
-            dir_acc_ohlc = 0.5; ohlc_mae = 999.
+        dir_p_np  = np.concatenate(val_dir_prob, axis=0)
 
-        dir_f1     = 0.5 * (buy_f1 + sell_f1)
-        val_metric = (0.25*val_acc + 0.25*macro_f1 
-                + 0.20*dir_f1 + 0.15*hold_f1 + 0.15*dir_acc_ohlc)
+        # v3.17: dir_acc из dir_head
+        dir_acc_head = 0.5; dir_cov = 0.0
+        if len(val_trues) > 0:
+            # Берём только UP/DOWN (не HOLD) для оценки направления
+            trues_arr = vt
+            mask_ud = trues_arr != 1
+            dir_cov = float(mask_ud.mean())
+            if mask_ud.any():
+                # dir_target: UP=1, DOWN=0
+                dir_target = (trues_arr[mask_ud] == 0).astype(int)
+                dir_pred   = (dir_p_np[mask_ud] > 0.5).astype(int)
+                dir_acc_head = float((dir_pred == dir_target).mean())
 
-        # [5.1] CAWR: один шаг в конце эпохи
+        prec_pc    = precision_score(vt, vp, average=None,
+                                    labels=[0, 1, 2], zero_division=0)
+        prec_buy   = float(prec_pc[0])
+        prec_sell  = float(prec_pc[2])
+        prec_ud    = 0.5 * (prec_buy + prec_sell)
+
+        dir_mask    = (vt != 1)
+        dir_acc_cls = (float((vp[dir_mask] == vt[dir_mask]).mean())
+                       if dir_mask.any() else 0.5)
+
+        # v3.17: метрика на честном dir_acc
+        val_metric = dir_acc_head * prec_ud
+
         scheduler.step()
 
-        g_str = '[' + ','.join(f'{g:.2f}' for g in criterion.focal.gamma) + ']'
         print(f'  [{phase_name}] E{epoch:3d}/{n_epochs} '
               f'cls={total_cls / max(n_steps, 1):.4f} '
               f'reg={total_reg / max(n_steps, 1):.5f} | '
               f'val_acc={val_acc:.4f} mF1={macro_f1:.4f} | '
               f'buy={buy_f1:.3f} hold={hold_f1:.3f} sell={sell_f1:.3f} | '
-              f'dir_f1={dir_f1:.3f} dir_acc={dir_acc_ohlc:.4f} '
-              f'ohlc_mae={ohlc_mae:.4f} | '
-              f'metric={val_metric:.4f} gamma={g_str} '
+              f'dir_head={dir_acc_head:.4f} (cov={dir_cov:.2f}) | '
+              f'prec_ud={prec_ud:.3f} | '
+              f'metric={val_metric:.4f} | '
               f'lr={optimizer.param_groups[0]["lr"]:.2e}')
 
         if val_metric > best_metric:
@@ -354,7 +323,6 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
                                 temporal_split, INDICATOR_COLS)
     from ml.multiscale_cnn_v3 import (MultiScaleHybridV3, MultiTaskLossV3,
                                        _make_loader_v3)
-    from torch.utils.data import Subset
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'  Device: {device}')
@@ -374,22 +342,14 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
     y_val  = y_all[idx_val]
     y_test = y_all[idx_test]
     print(f'  Train: {len(y_tr)} Val: {len(y_val)} Test: {len(y_test)}')
-    print('  Распределение (all):');   class_distribution(y_all)
     print('  Распределение (train):'); class_distribution(y_tr)
-
-    counts_dict_s  = Counter(y_tr.tolist())
-    sample_weights = torch.tensor(
-        [1.0 / counts_dict_s[int(y)] for y in y_tr], dtype=torch.float32)
-    wrs_sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True)
 
     tr_subset  = Subset(dataset, idx_tr.tolist())
     val_subset = Subset(dataset, idx_val.tolist())
-    # v3.16: num_workers=0 — фикс Windows multiprocessing
+
+    # v3.17: обычный shuffle без WRS — балансировка через class_weights + focal
     tr_loader  = _make_loader_v3(tr_subset,  CFG.batch_size,
-                                  shuffle=False, sampler=wrs_sampler, num_workers=0)
+                                  shuffle=True, sampler=None, num_workers=0)
     val_loader = _make_loader_v3(val_subset, CFG.batch_size,
                                   shuffle=False, num_workers=0)
     te_ds = Subset(dataset, idx_test.tolist())
@@ -404,21 +364,21 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
     _init_cls_head(model)
 
     counts_dict = Counter(y_tr.tolist()); total_tr = len(y_tr)
-    import math
-    raw_w = [math.sqrt(total_tr / max(counts_dict.get(i,1), 1)) for i in range(3)]
+    raw_w = [math.sqrt(total_tr / max(counts_dict.get(i, 1), 1)) for i in range(3)]
     max_w = max(raw_w)
-    cls_weights = torch.tensor([w/max_w for w in raw_w], dtype=torch.float32).to(device)
+    cls_weights = torch.tensor([w / max_w for w in raw_w], dtype=torch.float32).to(device)
     print(f'  Class weights: BUY={cls_weights[0]:.3f} '
           f'HOLD={cls_weights[1]:.3f} SELL={cls_weights[2]:.3f}')
 
+    # v3.17: новые гиперпараметры
     criterion = MultiTaskLossV3(
         cls_weight=cls_weights,
-        gamma_per_class=(2.0, 3.5, 2.0),   # FLAT gamma поднята
-        label_smoothing=0.08,
-        future_bars=CFG.future_bars,
-        huber_delta=0.5,
-        direction_weight=0.50,              # было 0.30
-        reg_loss_weight=0.25,               # было 0.15
+        gamma_per_class=(2.0, 1.0, 2.0),
+        label_smoothing=0.05,
+        future_bars=CFG.future_bars,        # теперь 1
+        huber_delta=0.3,                     # снизили, т.к. ΔClose ~ 0.01 на h=1
+        direction_weight=0.80,               # residual signal сильнее
+        reg_loss_weight=0.30,                # OHLC критичен для стратегии
         aux_loss_weight=0.05,
     ).to(device)
 
@@ -427,12 +387,13 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
                       n_epochs=pretrain_epochs, lr=3e-4)
 
     print('\n  [Phase-1] Full training — CAWR T_0=20, adaptive gamma')
-    max_lr = 3e-4
+    max_lr = 2e-4
 
     backbone_ids = {id(p) for p in model.backbone.parameters()}
     hourly_ids   = ({id(p) for p in model.hourly_enc.parameters()}
                     if use_hourly and hasattr(model, 'hourly_enc') else set())
     cls_head_ids = {id(p) for p in model.cls_head.parameters()}
+    dir_head_ids = {id(p) for p in model.dir_head.parameters()}
     crit_params  = list(criterion.parameters())
 
     param_groups = [
@@ -440,15 +401,18 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
          'lr': max_lr * 0.15, 'name': 'backbone', 'weight_decay': 5e-4},
         {'params': list(model.cls_head.parameters()),
          'lr': max_lr * 0.5,  'name': 'cls_head', 'weight_decay': 1e-4},
+        {'params': list(model.dir_head.parameters()),
+         'lr': max_lr,        'name': 'dir_head', 'weight_decay': 1e-4},
         {'params': [p for p in model.parameters()
                     if (p.requires_grad
                         and id(p) not in backbone_ids
                         and id(p) not in hourly_ids
-                        and id(p) not in cls_head_ids)],
+                        and id(p) not in cls_head_ids
+                        and id(p) not in dir_head_ids)],
          'lr': max_lr, 'name': 'other', 'weight_decay': 5e-3},
     ]
     if hourly_ids:
-        param_groups.insert(2, {
+        param_groups.insert(3, {
             'params': list(model.hourly_enc.parameters()),
             'lr': max_lr * 0.1, 'name': 'hourly', 'weight_decay': 5e-4})
 
@@ -456,16 +420,14 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
         param_groups + [{'params': crit_params, 'lr': max_lr,
                          'name': 'criterion', 'weight_decay': 1e-4}])
 
-    _ACCUM     = 2
-    _EPOCHS    = 60    # v3.16: 50 → 60
-    _PATIENCE  = 12    # v3.16: 8  → 12  (достаточно T_0=20)
-    print(f'  [Sched] CAWR T_0=20 T_mult=2 → рестарты на e20, e60')
-    print(f'  [LR]    backbone={max_lr * 0.15:.2e} '
-          f'cls_head={max_lr * 0.5:.2e} other={max_lr:.2e}')
+    _ACCUM    = 2
+    _EPOCHS   = 20             # было 60 — overfit наступает раньше 
+    _PATIENCE = 5              # было 12 — overfit за 10 эпох
+    print(f'  [Sched] CAWR T_0=20 T_mult=2')
+    for g in param_groups:
+        print(f'  [LR] {g["name"]:12s}: {g["lr"]:.2e}')
 
-    # [5.1] CosineAnnealingWarmRestarts T_0=20 (v3.16)
-    scheduler = CosineAnnealingWarmRestarts(
-        optimizer, T_0=20, T_mult=2, eta_min=1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=_EPOCHS, eta_min=1e-6)
 
     _run_epochs(
         model, tr_loader, val_loader, optimizer, scheduler,
@@ -476,9 +438,7 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
         phase_name='F1-full',
         ctx_dim=ctx_dim,
         use_hourly=use_hourly,
-        accum_steps=_ACCUM,
-        use_mixup=True,
-        mixup_alpha=0.4)
+        accum_steps=_ACCUM)
 
     print('\n' + '=' * 60 + '\nОценка на test set\n' + '=' * 60)
     from ml.multiscale_cnn_v3 import evaluate_multiscale_v3
@@ -496,8 +456,8 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
 
 if __name__ == '__main__':
     from multiprocessing import freeze_support
-    freeze_support()                           # v3.16: фикс Windows spawn
-    parser = argparse.ArgumentParser(description='Trainer v3.16')
+    freeze_support()
+    parser = argparse.ArgumentParser(description='Trainer v3.17')
     parser.add_argument('--model',           default='ml/model_multiscale_v3.pt')
     parser.add_argument('--rebuild',         action='store_true')
     parser.add_argument('--no-hourly',       action='store_true')
