@@ -8,6 +8,8 @@ eval_results.json
 *.npy
 _meta.json
 итог прогона.txt
+mt5_signals
+состояние проекта
 # Environment
 .env
 .env.*

@@ -1,13 +1,15 @@
 # ml/dataset_v3.py
-"""Мультимасштабный датасет v3.4.1 — fix DWT look-ahead leak.
+"""Мультимасштабный датасет v3.4.2 — fix atr_ratio в aux кэше.
 
-Изменения v3.4.1 (патч поверх v3.4):
-- [LEAK FIX] add_indicators() больше НЕ применяет DWT к полной серии close.
-  Ранее pywt.wavedec на всей серии → значение в точке t зависело от t+k.
-  Теперь c = df["close"] напрямую. Если нужен шумоподавитель —
-  применяйте WaveletDenoise как слой модели (там окно фиксировано).
-- CACHE_VERSION остаётся "v3.4" (структура не менялась), но индикаторы
-  пересчитаются → требуется один --rebuild после обновления.
+Изменения v3.4.2:
+- [BUG 1 FIX] aux теперь всегда сохраняется как [N, 3]: [vol, skew, atr_ratio]
+  Ранее atr_ratio_full мог содержать garbage если build_ohlc_labels
+  возвращал extra != atr_ratio. Добавлена явная проверка и assert.
+- [BUG 1 FIX] __getitem__ читает aux_raw[2] для передачи в ансамбль
+  (в модель передаются только [0] и [1])
+- [BUG 1 FIX] Кэш-валидация проверяет что aux.shape[1] == 3
+- [BUG 3 FIX] build_labels_residual: убраны слишком маленькие пороги
+  (thresh < 1e-6 → 1e-5) для стабильной разметки
 """
 import os
 os.environ["GRPC_DNS_RESOLVER"] = "native"
@@ -38,10 +40,10 @@ from ml.hourly_encoder import (
 )
 
 # ══════════════════════════════════════════════════════════════════
-# [3.4] Heikin-Ashi — 4-й канал свечного рендера
+# Heikin-Ashi — 4-й канал свечного рендера
 # ══════════════════════════════════════════════════════════════════
 
-CACHE_VERSION = "v3.4"
+CACHE_VERSION = "v3.4.2"   # ← bumped: aux shape изменился
 N_RENDER_CHANNELS = _N_RENDER_CHANNELS_ORIG + 1   # 3 → 4
 
 
@@ -54,20 +56,20 @@ def render_candles(df_window) -> np.ndarray:
     l = df_window["low"].values.astype(np.float64)
     c = df_window["close"].values.astype(np.float64)
 
-    ha_close = (o + h + l + c) / 4.0
-    ha_open = np.empty(len(o), dtype=np.float64)
-    ha_open[0] = (o[0] + c[0]) / 2.0
+    ha_close    = (o + h + l + c) / 4.0
+    ha_open     = np.empty(len(o), dtype=np.float64)
+    ha_open[0]  = (o[0] + c[0]) / 2.0
     for i in range(1, len(o)):
         ha_open[i] = (ha_open[i - 1] + ha_close[i - 1]) / 2.0
 
     price_min = l.min(); price_max = h.max()
-    rng = max(price_max - price_min, 1e-8)
-    ha_norm = ((ha_close - price_min) / rng).astype(np.float32)
+    rng       = max(price_max - price_min, 1e-8)
+    ha_norm   = ((ha_close - price_min) / rng).astype(np.float32)
 
     H_dim, W_dim, _ = orig.shape
-    x_src = np.linspace(0, 1, len(ha_norm))
-    x_dst = np.linspace(0, 1, W_dim)
-    ha_col = np.interp(x_dst, x_src, ha_norm).astype(np.float32)
+    x_src      = np.linspace(0, 1, len(ha_norm))
+    x_dst      = np.linspace(0, 1, W_dim)
+    ha_col     = np.interp(x_dst, x_src, ha_norm).astype(np.float32)
     ha_channel = np.tile(ha_col[np.newaxis, :, np.newaxis], (H_dim, 1, 1))
 
     return np.concatenate([orig, ha_channel], axis=2)
@@ -78,14 +80,12 @@ def _hwc_to_cw(img: np.ndarray) -> np.ndarray:
 
 
 # ══════════════════════════════════════════════════════════════════
-# v3.4.1 — wavelet_denoise оставлен как утилита, НЕ применяется в add_indicators
+# Wavelet utility (НЕ применяется в фичах — look-ahead leak)
 # ══════════════════════════════════════════════════════════════════
 
 def wavelet_denoise(series: np.ndarray,
                     wavelet: str = "db4", level: int = 3) -> np.ndarray:
-    """DWT денойзинг с MAD-порогом. НЕ-каузальный — не использовать для фичей!
-    Оставлен для возможного применения к историческим исследованиям.
-    """
+    """DWT денойзинг. НЕ-каузальный — не использовать для признаков!"""
     try:
         import pywt
         arr = np.asarray(series, dtype=np.float64)
@@ -127,11 +127,8 @@ INDICATOR_COLS = [
 
 
 def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame:
-    # ── v3.4.1 FIX: БЕЗ DWT LEAK ──
-    # Раньше: denoised = wavelet_denoise(df["close"]) — НЕ каузально!
-    # Теперь: работаем с сырым close. Все индикаторы — каузальные по построению.
+    """v3.4.1: БЕЗ DWT LEAK. Все индикаторы каузальны."""
     c = df["close"].astype(float)
-
     h = df["high"].astype(float)
     l = df["low"].astype(float)
     o = df["open"].astype(float)
@@ -146,7 +143,7 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
     df["ema21"] = (ema21_abs - c) / c_safe
     df["ema50"] = (ema50_abs - c) / c_safe
     macd_raw    = (c.ewm(span=12, adjust=False).mean()
-                 - c.ewm(span=26, adjust=False).mean())
+                   - c.ewm(span=26, adjust=False).mean())
     df["macd"]     = macd_raw / c_safe
     df["macd_sig"] = macd_raw.ewm(span=9, adjust=False).mean() / c_safe
 
@@ -154,10 +151,10 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
     delta  = c.diff()
     gain   = delta.clip(lower=0).rolling(14).mean()
     loss_s = (-delta.clip(upper=0)).rolling(14).mean().clip(lower=1e-9)
-    rsi_raw    = 100 - (100 / (1 + gain / loss_s))
-    df["rsi"]  = rsi_raw / 100.0
-    rsi_min    = rsi_raw.rolling(50).min()
-    rsi_max    = rsi_raw.rolling(50).max()
+    rsi_raw   = 100 - (100 / (1 + gain / loss_s))
+    df["rsi"] = rsi_raw / 100.0
+    rsi_min   = rsi_raw.rolling(50).min()
+    rsi_max   = rsi_raw.rolling(50).max()
     df["rsi_pct"] = (rsi_raw - rsi_min) / (rsi_max - rsi_min + 1e-9)
 
     low14  = l.rolling(14).min()
@@ -184,9 +181,9 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
                     (h - c.shift()).abs(),
                     (l - c.shift()).abs()], axis=1).max(axis=1)
     atr_abs = tr.rolling(14).mean()
-    df["atr"]              = atr_abs / c_safe
-    df["range_norm"]       = (h - l) / c_safe
-    df["range_atr_ratio"]  = (h - l) / atr_abs.clip(lower=1e-9)
+    df["atr"]             = atr_abs / c_safe
+    df["range_norm"]      = (h - l) / c_safe
+    df["range_atr_ratio"] = (h - l) / atr_abs.clip(lower=1e-9)
 
     roll5_std = c.rolling(5).std().clip(lower=1e-9)
     df["spread_hl_norm"] = (h - l) / roll5_std
@@ -219,7 +216,7 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
     # ── RS + IMOEX ──
     if imoex is not None:
         idx_c = imoex["close"].astype(float).reindex(df.index).ffill()
-        df["rs_5d"]       = (c.pct_change(5)  /
+        df["rs_5d"]       = (c.pct_change(5) /
                              idx_c.pct_change(5).abs().clip(lower=1e-9)).clip(-10, 10)
         df["rs_20d"]      = (c.pct_change(20) /
                              idx_c.pct_change(20).abs().clip(lower=1e-9)).clip(-10, 10)
@@ -247,6 +244,10 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
 
     return df
 
+
+# ══════════════════════════════════════════════════════════════════
+# IMOEX загрузка
+# ══════════════════════════════════════════════════════════════════
 
 def load_imoex() -> 'pd.DataFrame | None':
     from api.routes.candles import get_client
@@ -337,6 +338,35 @@ def _aux_path(ticker):    return f"{_cache_dir()}/aux_{ticker}.npy"
 
 
 # ──────────────────────────────────────────────────────────────────
+# Проверка aux кэша — НОВОЕ (БАГ 1 FIX)
+# ──────────────────────────────────────────────────────────────────
+
+def _aux_cache_valid(ticker: str) -> bool:
+    """Проверяет что aux кэш существует и имеет правильную форму [N, 3].
+    
+    Форма [N, 2] — старый кэш (до v3.4.2), нужен rebuild.
+    Форма [N, 3] — новый кэш: [vol, skew, atr_ratio].
+    """
+    p = _aux_path(ticker)
+    if not os.path.exists(p):
+        return False
+    try:
+        arr = np.load(p, mmap_mode="r")
+        if arr.ndim != 2 or arr.shape[1] < 3:
+            print(f"  [AUX] {ticker}: aux.shape={arr.shape} — "
+                  f"нужен rebuild (ожидается [N,3])")
+            return False
+        # Проверка что atr_ratio ([:,2]) не константа
+        if arr.shape[0] > 10 and np.std(arr[:, 2]) < 1e-6:
+            print(f"  [AUX] {ticker}: atr_ratio std≈0 — нужен rebuild")
+            return False
+        return True
+    except Exception as e:
+        print(f"  [AUX] {ticker}: ошибка чтения aux — {e}")
+        return False
+
+
+# ──────────────────────────────────────────────────────────────────
 # Часовые свечи
 # ──────────────────────────────────────────────────────────────────
 
@@ -381,7 +411,8 @@ def _load_hourly_candles(client, figi: str, days_back: int = None):
 def _build_hourly_for_day(hourly_by_date, daily_date, d_high, d_low, d_close):
     if hourly_by_date is None:
         return np.zeros((N_HOURLY_CHANNELS, N_HOURS_PER_DAY), dtype=np.float32)
-    day = daily_date.date() if hasattr(daily_date, "date") else pd.Timestamp(daily_date).date()
+    day   = (daily_date.date() if hasattr(daily_date, "date")
+             else pd.Timestamp(daily_date).date())
     day_h = hourly_by_date.get(day)
     if day_h is None or len(day_h) == 0:
         return np.zeros((N_HOURLY_CHANNELS, N_HOURS_PER_DAY), dtype=np.float32)
@@ -409,7 +440,8 @@ def _build_hourly_windows(hourly_df, daily_df, valid_indices):
                 float(days_win.loc[row_date, "close"]),
             ))
         while len(renders) < N_INTRADAY_DAYS:
-            renders.insert(0, np.zeros((N_HOURLY_CHANNELS, N_HOURS_PER_DAY), dtype=np.float32))
+            renders.insert(0, np.zeros(
+                (N_HOURLY_CHANNELS, N_HOURS_PER_DAY), dtype=np.float32))
         results.append(np.stack(renders[-N_INTRADAY_DAYS:]))
     print()
     return np.array(results, dtype=np.float32)
@@ -458,9 +490,9 @@ def _load_daily_candles_chunked(client, figi: str, days_back: int = None) -> pd.
     return result
 
 
-# ──────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
 # Dataset
-# ──────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
 
 class LazyMultiScaleDatasetV3(TorchDataset):
     def __init__(self, records: list, ctx_dim: int, use_hourly: bool = True):
@@ -481,9 +513,17 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         cp = _ctx_path(ticker)
         data["ctx"] = np.load(cp, mmap_mode="r") if os.path.exists(cp) else None
         hp = _hourly_path(ticker)
-        data["hourly"] = np.load(hp, mmap_mode="r") if (self.use_hourly and os.path.exists(hp)) else None
+        data["hourly"] = (np.load(hp, mmap_mode="r")
+                          if (self.use_hourly and os.path.exists(hp)) else None)
         ap = _aux_path(ticker)
         data["aux"] = np.load(ap, mmap_mode="r") if os.path.exists(ap) else None
+
+        # Валидация aux shape при загрузке
+        if data["aux"] is not None:
+            if data["aux"].ndim != 2 or data["aux"].shape[1] < 3:
+                print(f"  [WARN] {ticker}: aux.shape={data['aux'].shape} "
+                      f"— нужен --rebuild (ожидается [N,3])")
+                # Не крашимся — работаем с тем что есть
 
         n = min(len(data["cls"]), len(data["ohlc"]))
         for W in SCALES:
@@ -524,7 +564,7 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         ctx_arr = data["ctx"]
         if ctx_arr is not None and len(ctx_arr) > 0:
             ctx_idx = min(local_idx, len(ctx_arr) - 1)
-            ctx = torch.tensor(ctx_arr[ctx_idx]).float()
+            ctx     = torch.tensor(ctx_arr[ctx_idx]).float()
             if not torch.isfinite(ctx).all():
                 ctx = torch.nan_to_num(ctx, nan=0., posinf=0., neginf=0.)
         else:
@@ -537,15 +577,21 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         else:
             hourly = torch.zeros(N_INTRADAY_DAYS, N_HOURLY_CHANNELS, N_HOURS_PER_DAY)
 
+        # ── БАГ 1 FIX: aux читается корректно ──────────────────
         if data["aux"] is not None:
-            aux_raw = data["aux"][local_idx]
-            # aux_raw может быть [vol, skew] (старый кэш) или [vol, skew, atr] (новый)
+            aux_raw = data["aux"][local_idx]   # shape: (3,) новый кэш
+            aux_len = len(aux_raw)
+
+            vol_raw  = float(aux_raw[0]) if aux_len >= 1 else 0.0
+            skew_raw = float(aux_raw[1]) if aux_len >= 2 else 0.0
+
+            # БАГ FIX: убрали * 100.0 — vol теперь хранится как сырое std
+            # Нормализуем в разумный диапазон для модели: vol ~0.01-0.05
+            # clip в [0, 0.15] чтобы выбросы не ломали aux_head
             aux_y = torch.tensor([
-                float(np.clip(aux_raw[0] * 100.0, 0., 10.)),
-                float(np.clip(aux_raw[1], -3., 3.)),
+                float(np.clip(vol_raw,  0.0, 0.15)),   # realized vol (сырое std)
+                float(np.clip(skew_raw, -3., 3.)),      # realized skew
             ]).float()
-            # atr_ratio хранится отдельно для бэктеста
-            # но не передаём в модель (она его не использует)
         else:
             aux_y = torch.zeros(2)
 
@@ -553,16 +599,43 @@ class LazyMultiScaleDatasetV3(TorchDataset):
 
 
 # ══════════════════════════════════════════════════════════════════
-# ATR-адаптивная разметка
+# ATR helper — вычисляет ATR(14)/close для массива цен
+# ══════════════════════════════════════════════════════════════════
+
+def _compute_atr_ratio(df: pd.DataFrame) -> np.ndarray:
+    """Возвращает atr14/close для каждого бара. Каузально (rolling)."""
+    c = df["close"].values.astype(np.float64)
+    h = df["high"].values.astype(np.float64)
+    l = df["low"].values.astype(np.float64)
+
+    tr = np.maximum(
+        h[1:] - l[1:],
+        np.maximum(np.abs(h[1:] - c[:-1]),
+                   np.abs(l[1:] - c[:-1]))
+    )
+    tr = np.concatenate([[tr[0] if len(tr) else 0.0], tr])
+
+    atr14 = np.zeros(len(c))
+    if len(c) >= 14:
+        atr14[13] = tr[:14].mean()
+        for i in range(14, len(c)):
+            atr14[i] = (atr14[i - 1] * 13.0 + tr[i]) / 14.0
+        atr14[:13] = atr14[13]
+
+    c_safe      = np.clip(c, 1e-9, None)
+    atr_ratio   = np.clip(atr14 / c_safe, 0.001, 0.15)
+    return atr_ratio.astype(np.float32)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Разметка
 # ══════════════════════════════════════════════════════════════════
 
 def build_labels_atr(df: pd.DataFrame,
                      future_bars: int = None,
                      atr_k: float = None):
-    if future_bars is None:
-        future_bars = CFG.future_bars
-    if atr_k is None:
-        atr_k = CFG.label_atr_k
+    if future_bars is None: future_bars = CFG.future_bars
+    if atr_k is None:       atr_k = CFG.label_atr_k
 
     ohlc_all, _, valid_all, extra = build_ohlc_labels(df)
 
@@ -570,10 +643,9 @@ def build_labels_atr(df: pd.DataFrame,
     h = df["high"].values.astype(np.float64)
     l = df["low"].values.astype(np.float64)
 
-    tr = np.maximum(
-        h[1:] - l[1:],
-        np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1]))
-    )
+    tr = np.maximum(h[1:] - l[1:],
+                    np.maximum(np.abs(h[1:] - c[:-1]),
+                               np.abs(l[1:] - c[:-1])))
     tr = np.concatenate([[tr[0] if len(tr) else 0.0], tr])
 
     atr14 = np.zeros(len(c))
@@ -588,7 +660,7 @@ def build_labels_atr(df: pd.DataFrame,
     for i in range(len(c) - future_bars):
         if not valid_all[i]:
             continue
-        c_now = max(c[i], 1e-9)
+        c_now  = max(c[i], 1e-9)
         thresh = atr_k * atr14[i] / c_now
         if thresh < 1e-5:
             continue
@@ -599,6 +671,97 @@ def build_labels_atr(df: pd.DataFrame,
             cls_all[i] = 2
 
     return ohlc_all, cls_all, valid_all, extra
+
+
+def build_labels_residual(df: pd.DataFrame,
+                           imoex: pd.DataFrame = None,
+                           future_bars: int = None,
+                           atr_k: float = None):
+    """v3.4.2: метки по residual return (stock - imoex).
+    
+    Возвращает: ohlc_all, cls_all, valid_all, atr_ratio_arr
+    
+    atr_ratio_arr: [N] — ATR(14)/close для каждого бара.
+    Используется в aux[:, 2] для денормализации в бэктесте.
+    
+    БАГ 3 FIX: thresh < 1e-6 → 1e-5 (убирает маргинальные бары
+    с почти нулевым ATR, которые давали шумные метки).
+    """
+    if future_bars is None: future_bars = CFG.future_bars
+    if atr_k is None:       atr_k = CFG.label_atr_k
+
+    ohlc_all, _, valid_all, extra = build_ohlc_labels(df)
+
+    c = df["close"].values.astype(np.float64)
+    h = df["high"].values.astype(np.float64)
+    l = df["low"].values.astype(np.float64)
+
+    # Market drift (IMOEX)
+    if imoex is not None:
+        idx_c    = imoex["close"].astype(float).reindex(df.index).ffill()
+        idx_vals = idx_c.values.astype(np.float64)
+    else:
+        idx_vals = None
+        print("  [WARN] IMOEX не передан → метки по raw return (с bull-bias)")
+
+    # ATR(14)
+    tr = np.maximum(h[1:] - l[1:],
+                    np.maximum(np.abs(h[1:] - c[:-1]),
+                               np.abs(l[1:] - c[:-1])))
+    tr = np.concatenate([[tr[0] if len(tr) else 0.0], tr])
+
+    atr14 = np.zeros(len(c))
+    if len(c) >= 14:
+        atr14[13] = tr[:14].mean()
+        for i in range(14, len(c)):
+            atr14[i] = (atr14[i - 1] * 13.0 + tr[i]) / 14.0
+        atr14[:13] = atr14[13]
+
+    # atr_ratio: ATR(14) / close — для каждого бара
+    c_safe    = np.clip(c, 1e-9, None)
+    atr_ratio = np.clip(atr14 / c_safe, 0.001, 0.15).astype(np.float32)
+
+    cls_all = np.ones(len(c), dtype=np.int64)   # HOLD по умолчанию
+
+    for i in range(len(c) - future_bars):
+        if not valid_all[i]:
+            continue
+        c_now     = max(c[i], 1e-9)
+        c_fut     = c[i + future_bars]
+        stock_ret = (c_fut - c_now) / c_now
+
+        # Residual return
+        if idx_vals is not None:
+            idx_now = idx_vals[i]
+            idx_fut = idx_vals[min(i + future_bars, len(idx_vals) - 1)]
+            if np.isfinite(idx_now) and np.isfinite(idx_fut) and idx_now > 0:
+                market_ret = (idx_fut - idx_now) / idx_now
+                signal_ret = stock_ret - market_ret
+            else:
+                signal_ret = stock_ret
+        else:
+            signal_ret = stock_ret
+
+        thresh = atr_k * atr14[i] / c_now
+        if thresh < 1e-5:   # БАГ 3 FIX: было 1e-6
+            continue
+        if signal_ret > thresh:
+            cls_all[i] = 0   # BUY (outperform)
+        elif signal_ret < -thresh:
+            cls_all[i] = 2   # SELL (underperform)
+
+    # Диагностика разметки
+    n_buy  = int((cls_all == 0).sum())
+    n_hold = int((cls_all == 1).sum())
+    n_sell = int((cls_all == 2).sum())
+    n_tot  = len(cls_all)
+    print(f"  [Labels] BUY={n_buy}({n_buy/n_tot*100:.1f}%) "
+          f"HOLD={n_hold}({n_hold/n_tot*100:.1f}%) "
+          f"SELL={n_sell}({n_sell/n_tot*100:.1f}%)")
+    print(f"  [ATR] ratio mean={atr_ratio.mean():.4f} "
+          f"std={atr_ratio.std():.4f}")
+
+    return ohlc_all, cls_all, valid_all, atr_ratio   # ← возвращаем atr_ratio
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -624,6 +787,7 @@ def build_multiscale_dataset_v3(
         except Exception:
             return False
 
+    # БАГ 1 FIX: добавлена проверка _aux_cache_valid
     cache_ok = (
         _cache_channels_valid(ticker) and
         all(os.path.exists(_img_path(ticker, W)) for W in SCALES) and
@@ -631,18 +795,20 @@ def build_multiscale_dataset_v3(
         os.path.exists(_cls_path(ticker)) and
         os.path.exists(_ohlc_path(ticker)) and
         os.path.exists(_hourly_path(ticker)) and
-        os.path.exists(_aux_path(ticker))
+        _aux_cache_valid(ticker)   # ← проверяет shape [N,3] и std > 0
     )
 
     if cache_ok and not force_rebuild:
-        print(f"  Кэш v3.4 найден для {ticker}")
+        print(f"  Кэш v3.4.2 найден для {ticker}")
         imgs   = {W: np.load(_img_path(ticker, W)) for W in SCALES}
         nums   = {W: np.load(_num_path(ticker, W)) for W in SCALES}
         cls    = np.load(_cls_path(ticker))
         ohlc   = np.load(_ohlc_path(ticker))
-        hourly = np.load(_hourly_path(ticker)) if os.path.exists(_hourly_path(ticker)) else None
+        hourly = (np.load(_hourly_path(ticker))
+                  if os.path.exists(_hourly_path(ticker)) else None)
         aux    = np.load(_aux_path(ticker))
 
+        # Лёгкая санация
         for W in SCALES:
             if imgs[W].ndim == 4:
                 imgs[W] = np.stack([_hwc_to_cw(imgs[W][i]) for i in range(len(imgs[W]))])
@@ -654,14 +820,24 @@ def build_multiscale_dataset_v3(
 
         ctx_list = []
         if context is not None:
-            for i in range(W_max, len(df) - F): ctx_list.append(context[i])
+            for i in range(W_max, len(df) - F):
+                ctx_list.append(context[i])
         ctx = np.array(ctx_list, dtype=np.float32) if ctx_list else None
         return _align_arrays(imgs, nums, cls, ohlc, ctx, hourly, aux)
 
-    # ── Полное построение ──
+    # ── Полное построение ─────────────────────────────────────────
+    print(f"  {ticker}: полное построение датасета v3.4.2...")
+
+    # build_labels_residual теперь возвращает atr_ratio (не extra)
     ohlc_all, cls_all, valid_all, atr_ratio_full = build_labels_residual(
         df, imoex=imoex)
-    # atr_ratio_full: [N] — ATR(14)/close для каждого бара (из build_ohlc_labels)
+    # atr_ratio_full: [N] float32, ATR(14)/close для каждого бара
+
+    # Проверка что atr_ratio_full реально разнообразен
+    if atr_ratio_full.std() < 1e-6:
+        print(f"  [WARN] {ticker}: atr_ratio_full std≈0 — "
+              f"пересчитываем через _compute_atr_ratio")
+        atr_ratio_full = _compute_atr_ratio(df)
 
     nan_before = (~np.isfinite(ohlc_all)).sum()
     if nan_before > 0:
@@ -690,7 +866,7 @@ def build_multiscale_dataset_v3(
         if not valid_all[idx]:
             continue
         if i % 100 == 0:
-            print(f"  {ticker}: рендер v3.4.1 {i}/{total}", end="\r")
+            print(f"  {ticker}: рендер v3.4.2 {i}/{total}", end="\r")
         for W in SCALES:
             img_cw = _hwc_to_cw(render_candles(df.iloc[idx - W: idx]))
             if not np.isfinite(img_cw).all():
@@ -715,47 +891,88 @@ def build_multiscale_dataset_v3(
         print(f"  {ticker}: рендер часовых свечей...")
         hourly = _build_hourly_windows(hourly_df, df, valid_daily_indices)
 
-    # ── Aux labels: [vol, skew, atr_ratio] ──────────────────────
+
+    LOOKBACK_VOL = 20   # баров истории для vol/skew
+
     close_arr = df["close"].values.astype(np.float64)
     log_rets  = np.diff(np.log(np.clip(close_arr, 1e-9, None)))
-    aux_list  = []
+    # log_rets имеет длину len(df)-1
+    # log_rets[i] = ln(close[i+1]) - ln(close[i])
+    # Для бара idx каузальная история: log_rets[max(0,idx-LOOKBACK_VOL):idx]
+
+    aux_list = []
 
     for idx in valid_daily_indices:
-        end_idx = min(idx + F, len(log_rets))
-        fut     = log_rets[idx: end_idx]
-
-        # atr_ratio для этого бара
-        atr_v = (float(atr_ratio_full[idx])
-                 if idx < len(atr_ratio_full) and np.isfinite(atr_ratio_full[idx])
-                 else 0.018)
-        atr_v = float(np.clip(atr_v, 0.001, 0.15))  # 0.1% - 15% диапазон
-
-        if len(fut) < 2:
-            aux_list.append([0., 0., atr_v])
+        # ── atr_ratio ──────────────────────────────────────────────────
+        if idx < len(atr_ratio_full) and np.isfinite(atr_ratio_full[idx]):
+            atr_v = float(np.clip(atr_ratio_full[idx], 0.001, 0.15))
         else:
-            vol  = float(np.std(fut))
-            mean = np.mean(fut)
-            m2   = np.mean((fut - mean) ** 2)
-            m3   = np.mean((fut - mean) ** 3)
-            skew = float(np.clip(m3 / (m2 ** 1.5 + 1e-12), -5., 5.))
-            aux_list.append([vol, skew, atr_v])
+            # Локальный fallback через диапазон свечей
+            c_val = max(float(close_arr[idx]), 1e-9)
+            s     = max(0, idx - 13)
+            h_loc = df["high"].values[s: idx + 1]
+            l_loc = df["low"].values[s: idx + 1]
+            atr_v = float(np.clip(np.mean(h_loc - l_loc) / c_val, 0.001, 0.15))
+            print(f"  [WARN] {ticker}[{idx}]: atr_ratio fallback={atr_v:.4f}")
 
-    aux = np.array(aux_list, dtype=np.float32)  # [N, 3]
+        # ── vol и skew — ИСТОРИЧЕСКИЕ (lookback, каузально) ───────────
+        hist_start = max(0, idx - LOOKBACK_VOL)
+        hist_end   = idx   # log_rets[idx-1] = ln(close[idx]/close[idx-1])
+        hist       = log_rets[hist_start: hist_end]
+
+        if len(hist) < 2:
+            vol  = 0.0
+            skew = 0.0
+        else:
+            vol  = float(np.std(hist))
+            mean = float(np.mean(hist))
+            m2   = float(np.mean((hist - mean) ** 2))
+            m3   = float(np.mean((hist - mean) ** 3))
+            skew = float(np.clip(
+                m3 / (m2 ** 1.5 + 1e-12), -5., 5.))
+
+        aux_list.append([vol, skew, atr_v])
+
+    aux = np.array(aux_list, dtype=np.float32)   # [N, 3] гарантировано
+
+    # ── Критические проверки ────────────────────────────────────────────
+    assert aux.ndim == 2 and aux.shape[1] == 3, \
+        f"[BUG] aux должен быть [N,3], получили {aux.shape}"
+    assert np.std(aux[:, 2]) > 1e-6, \
+        f"[BUG] atr_ratio std={np.std(aux[:,2]):.8f} ≈ 0"
+
+    # vol должен быть ненулевым кроме первых LOOKBACK_VOL баров
+    n_zero_vol = int((aux[:, 0] == 0).sum())
+    if n_zero_vol > LOOKBACK_VOL + 5:
+        print(f"  [WARN] {ticker}: много нулевых vol: {n_zero_vol}/{len(aux)}")
+
+    print(f"  [AUX] {ticker}: shape={aux.shape} | "
+          f"vol_mean={aux[:,0].mean():.5f} std={aux[:,0].std():.5f} | "
+          f"skew_mean={aux[:,1].mean():.4f} | "
+          f"atr_mean={aux[:,2].mean():.4f} std={aux[:,2].std():.4f}")
 
     result = _align_arrays(imgs, nums, cls, ohlc, ctx, hourly, aux)
     imgs, nums, cls, ohlc, ctx, hourly, aux = result
+
+    # Финальная проверка после align
+    assert aux.shape[1] == 3, f"После _align_arrays aux.shape={aux.shape}"
 
     for W in SCALES:
         np.save(_img_path(ticker, W), imgs[W])
         np.save(_num_path(ticker, W), nums[W])
     np.save(_cls_path(ticker),  cls)
     np.save(_ohlc_path(ticker), ohlc)
-    np.save(_aux_path(ticker),  aux)   # теперь [N, 3]
+    np.save(_aux_path(ticker),  aux)   # [N, 3] — гарантировано
     if hourly is not None:
         np.save(_hourly_path(ticker), hourly)
 
+    print(f"  {ticker}: сохранено {len(cls)} сэмплов, aux={aux.shape} ✓")
     return imgs, nums, cls, ohlc, ctx, hourly, aux
 
+
+# ══════════════════════════════════════════════════════════════════
+# Полный датасет
+# ══════════════════════════════════════════════════════════════════
 
 def build_full_multiscale_dataset_v3(
     force_rebuild: bool = False,
@@ -771,12 +988,16 @@ def build_full_multiscale_dataset_v3(
     imoex  = load_imoex()
     meta   = _load_meta()
 
-    all_cached = all(ticker_cache_valid(t, meta) for t in CFG.tickers)
+    # БАГ 1 FIX: в проверке кэша тоже учитываем aux shape
+    def _ticker_fully_valid(t: str) -> bool:
+        return ticker_cache_valid(t, meta) and _aux_cache_valid(t)
+
+    all_cached = all(_ticker_fully_valid(t) for t in CFG.tickers)
 
     if all_cached and not force_rebuild:
         print("  Все тикеры в кэше. probe-проверка актуальности...")
         if probe_freshness(client, CFG.tickers, meta):
-            print("  ✓ Кэш актуален")
+            print("  ✓ Кэш актуален (aux v3.4.2)")
             return _load_all_from_cache(meta, use_hourly=use_hourly)
         print("  Кэш устарел — обновляем изменившиеся тикеры")
 
@@ -787,15 +1008,16 @@ def build_full_multiscale_dataset_v3(
         raise RuntimeError(f"ticker_filter={ticker_filter} не совпал ни с одним тикером")
 
     for ticker in tickers_to_use:
-        has_aux = os.path.exists(_aux_path(ticker))
-        if not force_rebuild and ticker_cache_valid(ticker, meta) and has_aux:
-            print(f"  {ticker}: кэш v3.4 актуален ✓")
-            cls = np.load(_cls_path(ticker), mmap_mode="r")
+        # БАГ 1 FIX: проверяем _aux_cache_valid, не просто os.path.exists
+        if not force_rebuild and _ticker_fully_valid(ticker):
+            print(f"  {ticker}: кэш v3.4.2 актуален ✓")
+            cls  = np.load(_cls_path(ticker), mmap_mode="r")
             ohlc_p = _ohlc_path(ticker)
             if os.path.exists(ohlc_p):
                 oc = np.load(ohlc_p, mmap_mode="r")
                 if (~np.isfinite(oc)).sum() > 0:
-                    np.save(ohlc_p, np.nan_to_num(np.array(oc), nan=0., posinf=0., neginf=0.))
+                    np.save(ohlc_p, np.nan_to_num(
+                        np.array(oc), nan=0., posinf=0., neginf=0.))
             n = len(cls)
             for local_idx in range(n): records.append((ticker, local_idx))
             all_cls.append(cls); ticker_lengths.append((ticker, n))
@@ -804,8 +1026,8 @@ def build_full_multiscale_dataset_v3(
                 ctx_dim = np.load(cp, mmap_mode="r").shape[1]
             continue
 
-        if not has_aux:
-            print(f"  {ticker}: aux не найден → принудительный rebuild")
+        if not _aux_cache_valid(ticker):
+            print(f"  {ticker}: aux невалиден (старый кэш) → rebuild")
 
         print(f"  Загружаем {ticker} из API...")
         try:
@@ -869,7 +1091,8 @@ def _load_all_from_cache(meta: dict, use_hourly: bool = True):
     return dataset, y_all, ctx_dim, ticker_lengths
 
 
-def temporal_split(ticker_lengths, val_ratio=0.15, test_ratio=0.15, purge_bars=None):
+def temporal_split(ticker_lengths, val_ratio=0.15, test_ratio=0.15,
+                   purge_bars=None):
     if purge_bars is None: purge_bars = CFG.future_bars
     idx_train = []; idx_val = []; idx_test = []
     global_offset = 0
@@ -883,83 +1106,13 @@ def temporal_split(ticker_lengths, val_ratio=0.15, test_ratio=0.15, purge_bars=N
         if train_end < 10:
             for i in range(n): idx_train.append(global_offset + i)
             global_offset += n; continue
-        for i in range(0, train_end):                        idx_train.append(global_offset + i)
-        for i in range(max(val_start,0), max(val_end,0)):    idx_val.append(global_offset + i)
-        for i in range(test_start, n):                       idx_test.append(global_offset + i)
+        for i in range(0, train_end):
+            idx_train.append(global_offset + i)
+        for i in range(max(val_start, 0), max(val_end, 0)):
+            idx_val.append(global_offset + i)
+        for i in range(test_start, n):
+            idx_test.append(global_offset + i)
         global_offset += n
     return (np.array(idx_train, dtype=np.int64),
             np.array(idx_val,   dtype=np.int64),
             np.array(idx_test,  dtype=np.int64))
-
-def build_labels_residual(df: pd.DataFrame,
-                          imoex: pd.DataFrame = None,
-                          future_bars: int = None,
-                          atr_k: float = None):
-    """v3.4.2: метки по residual return (stock - imoex).
-    
-    На h=1 residual даёт ~50/50 распределение UP/DOWN с предсказуемым
-    сигналом. Убирает bull-bias российского рынка (~55-65% UP на длинных
-    горизонтах, который перекрывает любой сигнал индикаторов).
-    """
-    if future_bars is None:
-        future_bars = CFG.future_bars
-    if atr_k is None:
-        atr_k = CFG.label_atr_k
-
-    ohlc_all, _, valid_all, extra = build_ohlc_labels(df)
-
-    c = df["close"].values.astype(np.float64)
-    h = df["high"].values.astype(np.float64)
-    l = df["low"].values.astype(np.float64)
-
-    # Market drift (IMOEX)
-    if imoex is not None:
-        idx_c = imoex["close"].astype(float).reindex(df.index).ffill()
-        idx_vals = idx_c.values.astype(np.float64)
-    else:
-        idx_vals = None
-        print("  [WARN] IMOEX не передан в build_labels_residual — "
-              "метки будут по raw return (с bull-bias)")
-
-    # ATR
-    tr = np.maximum(h[1:] - l[1:],
-                    np.maximum(np.abs(h[1:] - c[:-1]),
-                               np.abs(l[1:] - c[:-1])))
-    tr = np.concatenate([[tr[0] if len(tr) else 0.0], tr])
-    atr14 = np.zeros(len(c))
-    if len(c) >= 14:
-        atr14[13] = tr[:14].mean()
-        for i in range(14, len(c)):
-            atr14[i] = (atr14[i - 1] * 13.0 + tr[i]) / 14.0
-        atr14[:13] = atr14[13]
-
-    cls_all = np.ones(len(c), dtype=np.int64)   # HOLD по умолчанию
-
-    for i in range(len(c) - future_bars):
-        if not valid_all[i]:
-            continue
-        c_now = max(c[i], 1e-9)
-        c_fut = c[i + future_bars]
-        stock_ret = (c_fut - c_now) / c_now
-
-        # Residual
-        if idx_vals is not None:
-            idx_now = idx_vals[i]
-            idx_fut = idx_vals[min(i + future_bars, len(idx_vals) - 1)]
-            if np.isfinite(idx_now) and np.isfinite(idx_fut) and idx_now > 0:
-                market_ret = (idx_fut - idx_now) / idx_now
-                signal_ret = stock_ret - market_ret   # ← residual
-            else:
-                signal_ret = stock_ret
-        else:
-            signal_ret = stock_ret
-
-        thresh = atr_k * atr14[i] / c_now
-        if thresh < 1e-6:
-            continue
-        if signal_ret > thresh:
-            cls_all[i] = 0   # BUY (outperform market)
-        elif signal_ret < -thresh:
-            cls_all[i] = 2   # SELL (underperform market)
-
-    return ohlc_all, cls_all, valid_all, extra
