@@ -30,7 +30,7 @@ from ml.multiscale_cnn_v3 import (
     MultiScaleHybridV3, MultiTaskLossV3, _make_loader_v3,
     evaluate_multiscale_v3,
 )
-from ml.trainer_v3 import _run_epochs, _init_cls_head
+from ml.trainer_v3 import _run_epochs, _init_cls_head, _make_weighted_sampler
 
 
 def set_seed(seed: int):
@@ -139,15 +139,15 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
     # БАГ 3 FIX: gamma_per_class=(3.0, 1.0, 3.0) + direction_weight=0.80
     criterion = MultiTaskLossV3(
         cls_weight=cls_weights,
-        gamma_per_class=(3.0, 1.0, 3.0),   # ← было (2.0, 1.0, 2.0)
-        label_smoothing=0.03,               # ← было 0.05 (меньше сглаживания)
+        gamma_per_class=(3.0, 1.0, 3.0),
+        label_smoothing=0.01,        # было 0.03 (по плану БАГ 3)
         future_bars=CFG.future_bars,
         huber_delta=0.3,
         direction_weight=0.80,
-        reg_loss_weight=0.30,
-        aux_loss_weight=0.05,
+        reg_loss_weight=0.20,        # было 0.30 — выровнять с trainer_v3
+        aux_loss_weight=0.01,        # было 0.05 — критично, см. БАГ #B
     ).to(device)
-
+    
     backbone_ids = {id(p) for p in model.backbone.parameters()}
     hourly_ids   = ({id(p) for p in model.hourly_enc.parameters()}
                     if use_hourly and hasattr(model, 'hourly_enc') else set())
@@ -409,8 +409,9 @@ def main():
     # ── Loaders ───────────────────────────────────────────────────────────
     tr_subset  = Subset(dataset, idx_tr.tolist())
     val_subset = Subset(dataset, idx_val.tolist())
-    tr_loader  = _make_loader_v3(tr_subset,  CFG.batch_size,
-                                  shuffle=True, sampler=None, num_workers=0)
+    wrs = _make_weighted_sampler(y_tr)
+    tr_loader = _make_loader_v3(tr_subset, CFG.batch_size,
+                              shuffle=False, sampler=wrs, num_workers=0)
     val_loader = _make_loader_v3(val_subset, CFG.batch_size,
                                   shuffle=False, num_workers=0)
     te_ds = Subset(dataset, idx_test.tolist())

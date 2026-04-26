@@ -1,258 +1,260 @@
-"""Клиент для работы с T-Bank Invest API."""
-from __future__ import annotations
+# data/tinkoff_client.py
+import logging
 import os
-os.environ['GRPC_DNS_RESOLVER'] = 'native'
-_cert = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'russian_ca.cer'))
-if os.path.exists(_cert):
-    os.environ.setdefault('GRPC_DEFAULT_SSL_ROOTS_FILE_PATH', _cert)
-
-
-from api.logger import get_logger
+import random
+import time
 from datetime import timedelta
-from functools import lru_cache
-from typing import Dict, Optional
 
 import pandas as pd
 
-from t_tech.invest import Client, CandleInterval, InstrumentIdType
+from t_tech.invest import Client, CandleInterval, Quotation
+from t_tech.invest.exceptions import RequestError
 from t_tech.invest.utils import now
 
+logger = logging.getLogger(__name__)
 
+TARGET = "invest-public-api.tbank.ru:443"
 
-logger = get_logger(__name__)
-
-# ── Константы ─────────────────────────────────────────────
-TARGET   = "invest-public-api.tbank.ru:443"   # актуальный домен
-SANDBOX  = "sandbox-invest-public-api.tbank.ru:443"
-
-INTERVALS: Dict[str, CandleInterval] = {
-    "1m":  CandleInterval.CANDLE_INTERVAL_1_MIN,
-    "5m":  CandleInterval.CANDLE_INTERVAL_5_MIN,
-    "15m": CandleInterval.CANDLE_INTERVAL_15_MIN,
-    "1h":  CandleInterval.CANDLE_INTERVAL_HOUR,
-    "1d":  CandleInterval.CANDLE_INTERVAL_DAY,
+INTERVALS = {
+    "1min": CandleInterval.CANDLE_INTERVAL_1_MIN,
+    "5min": CandleInterval.CANDLE_INTERVAL_5_MIN,
+    "15min": CandleInterval.CANDLE_INTERVAL_15_MIN,
+    "1h": CandleInterval.CANDLE_INTERVAL_HOUR,
+    "1d": CandleInterval.CANDLE_INTERVAL_DAY,
 }
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    s = str(exc)
+    return (
+        "RESOURCE_EXHAUSTED" in s
+        or "request limit exceeded" in s
+        or "ratelimit_remaining=0" in s
+    )
+
+
+def _extract_retry_seconds(exc: Exception, default: int = 20) -> int:
+    try:
+        for arg in getattr(exc, "args", ()):
+            reset = getattr(arg, "ratelimit_reset", None)
+            if reset is not None:
+                return max(int(reset), 1)
+    except Exception:
+        pass
+    return default
+
+
 class TinkoffDataClient:
-    """Клиент для получения рыночных данных из T-Bank Invest API.
-
-    Особенности:
-    - FIGI кэш в памяти (загружаем список акций один раз за сессию)
-    - Свечи кэшируются по ключу figi+interval+days
-    - Все print убраны — только logger
-    """
-
     def __init__(self, token: str):
-        if not token:
-            raise ValueError("T-Bank token is required")
-
         self.token = token
-        self._candle_cache: Dict[str, pd.DataFrame] = {}
-        self._figi_cache:   Dict[str, str]          = {}   # ticker → figi
-        self._figi_loaded   = False
+        self._figi_cache: dict[str, str] = {}
+        self._uid_cache: dict[str, str] = {}
+        self._indicative_uid_cache: dict[str, str] = {}
+        self._candle_cache: dict[str, pd.DataFrame] = {}
 
-        logger.info("TinkoffDataClient initialized (target=%s)", TARGET)
+    @staticmethod
+    def _q(q: Quotation) -> float:
+        return q.units + q.nano / 1e9
 
-    # ── FIGI ──────────────────────────────────────────────
+    def find_figi(self, ticker: str) -> str | None:
+        if ticker in self._figi_cache:
+            return self._figi_cache[ticker]
 
-    def _load_figi_cache(self) -> None:
-        """Загружаем все акции один раз и кэшируем ticker→figi."""
-        if self._figi_loaded:
-            return
-        try:
-            with Client(self.token, target=TARGET) as client:
-                instruments = client.instruments.shares(
-                    instrument_status=1
-                ).instruments
-            self._figi_cache = {i.ticker: i.figi for i in instruments}
-            self._figi_loaded = True
-            logger.info("FIGI cache loaded: %d instruments", len(self._figi_cache))
-        except Exception as e:
-            logger.error("Failed to load FIGI cache: %s", e)
-            raise
+        with Client(self.token, target=TARGET) as api:
+            response = api.instruments.find_instrument(query=ticker)
+            for inst in response.instruments:
+                if getattr(inst, "ticker", None) == ticker and getattr(inst, "figi", None):
+                    self._figi_cache[ticker] = inst.figi
+                    if getattr(inst, "uid", None):
+                        self._uid_cache[ticker] = inst.uid
+                    return inst.figi
 
-    def find_figi(self, ticker: str) -> Optional[str]:
-        """Найти FIGI по тикеру (с кэшем — O(1) после первой загрузки)."""
-        ticker = ticker.upper()
-        if ticker not in self._figi_cache:
-            self._load_figi_cache()
-        figi = self._figi_cache.get(ticker)
-        if figi:
-            logger.debug("FIGI found: %s → %s", ticker, figi)
-        else:
-            logger.warning("Ticker not found: %s", ticker)
-        return figi
+            for inst in response.instruments:
+                if getattr(inst, "ticker", None) == ticker:
+                    figi = getattr(inst, "figi", None)
+                    if figi:
+                        self._figi_cache[ticker] = figi
+                        if getattr(inst, "uid", None):
+                            self._uid_cache[ticker] = inst.uid
+                        return figi
 
-    def get_ticker_by_figi(self, figi: str) -> Optional[str]:
-        """Обратный поиск: figi → ticker."""
-        if not self._figi_loaded:
-            self._load_figi_cache()
-        for ticker, f in self._figi_cache.items():
-            if f == figi:
-                return ticker
+        logger.warning("FIGI not found for ticker=%s", ticker)
         return None
 
+    def find_uid(self, ticker: str) -> str | None:
+        if ticker in self._uid_cache:
+            return self._uid_cache[ticker]
 
-    # ── Индикативы (IMOEX, Brent и т.д.) ─────────────────────
+        with Client(self.token, target=TARGET) as api:
+            response = api.instruments.find_instrument(query=ticker)
+            for inst in response.instruments:
+                if getattr(inst, "ticker", None) == ticker and getattr(inst, "uid", None):
+                    self._uid_cache[ticker] = inst.uid
+                    if getattr(inst, "figi", None):
+                        self._figi_cache[ticker] = inst.figi
+                    return inst.uid
 
-    def get_indicatives(self) -> list:
-        try:
-            from t_tech.invest import InstrumentsRequest
-            with Client(self.token, target=TARGET) as client:
-                return client.instruments.indicatives(
-                    request=InstrumentsRequest()
-                ).instruments
-        except Exception as e:
-            logger.error("Failed to get indicatives: %s", e)
-            return []
+            for inst in response.instruments:
+                if getattr(inst, "ticker", None) == ticker:
+                    uid = getattr(inst, "uid", None)
+                    if uid:
+                        self._uid_cache[ticker] = uid
+                        if getattr(inst, "figi", None):
+                            self._figi_cache[ticker] = inst.figi
+                        return uid
 
-    def find_indicative_uid(self, ticker: str) -> Optional[str]:
-        """Найти UID индикативного инструмента по тикеру (IMOEX, BRENT и т.д.)."""
-        ticker_upper = ticker.upper()
-        instruments  = self.get_indicatives()
-        for inst in instruments:
-            if inst.ticker.upper() == ticker_upper:
-                logger.info("Indicative found: %s → uid=%s", ticker, inst.uid)
-                return inst.uid
-        logger.warning("Indicative not found: %s", ticker_upper)
+        logger.warning("UID not found for ticker=%s", ticker)
         return None
 
-    # ── Свечи ─────────────────────────────────────────────
+    def find_indicative_uid(self, ticker: str) -> str | None:
+        if ticker in self._indicative_uid_cache:
+            return self._indicative_uid_cache[ticker]
+
+        with Client(self.token, target=TARGET) as api:
+            response = api.instruments.find_instrument(query=ticker)
+            for inst in response.instruments:
+                if getattr(inst, "ticker", None) == ticker:
+                    uid = getattr(inst, "uid", None)
+                    if uid:
+                        self._indicative_uid_cache[ticker] = uid
+                        return uid
+
+        logger.warning("Indicative UID not found for ticker=%s", ticker)
+        return None
+
+    def _load_candles_chunked(
+        self,
+        *,
+        interval: str,
+        days_back: int,
+        figi: str | None = None,
+        uid: str | None = None,
+    ) -> pd.DataFrame:
+        if interval not in INTERVALS:
+            raise ValueError(f"Неизвестный интервал '{interval}'. Доступны: {list(INTERVALS)}")
+        if not figi and not uid:
+            raise ValueError("Нужно передать figi или uid")
+
+        chunk_days = 365 if interval == "1d" else 85 if interval == "1h" else days_back
+        all_frames = []
+        end = now()
+        remaining = int(days_back)
+        ident = figi or uid or "unknown"
+
+        with Client(self.token, target=TARGET) as api:
+            while remaining > 0:
+                chunk = min(remaining, chunk_days)
+                start = end - timedelta(days=chunk)
+
+                kwargs = {
+                    "from_": start,
+                    "to": end,
+                    "interval": INTERVALS[interval],
+                }
+                if figi is not None:
+                    kwargs["figi"] = figi
+                else:
+                    kwargs["instrument_id"] = uid
+
+                candles = None
+                last_exc = None
+
+                for attempt in range(6):
+                    try:
+                        candles = api.market_data.get_candles(**kwargs).candles
+                        last_exc = None
+                        break
+                    except RequestError as e:
+                        last_exc = e
+                        if _is_rate_limit_error(e):
+                            reset_s = _extract_retry_seconds(e, default=20)
+                            sleep_s = min(max(reset_s + random.uniform(0.3, 1.5), 1.0), 65.0)
+                            logger.warning(
+                                "Rate limit on get_candles(%s, %s) %s→%s, attempt %d/6, sleep %.1fs",
+                                ident, interval, start.date(), end.date(), attempt + 1, sleep_s
+                            )
+                            time.sleep(sleep_s)
+                            continue
+                        raise
+                    except Exception as e:
+                        last_exc = e
+                        if "RESOURCE_EXHAUSTED" in str(e):
+                            sleep_s = 20.0 + random.uniform(0.3, 1.5)
+                            logger.warning(
+                                "RESOURCE_EXHAUSTED on get_candles(%s, %s) %s→%s, attempt %d/6, sleep %.1fs",
+                                ident, interval, start.date(), end.date(), attempt + 1, sleep_s
+                            )
+                            time.sleep(sleep_s)
+                            continue
+                        raise
+
+                if last_exc is not None and candles is None:
+                    raise last_exc
+
+                if candles:
+                    df_chunk = pd.DataFrame({
+                        "time":   [c.time for c in candles],
+                        "open":   [self._q(c.open) for c in candles],
+                        "high":   [self._q(c.high) for c in candles],
+                        "low":    [self._q(c.low) for c in candles],
+                        "close":  [self._q(c.close) for c in candles],
+                        "volume": [c.volume for c in candles],
+                    }).set_index("time")
+                    all_frames.append(df_chunk)
+
+                end = start
+                remaining -= chunk
+
+                time.sleep(0.08 if interval == "1d" else 0.12)
+
+        if not all_frames:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        result = pd.concat(all_frames).sort_index()
+        return result[~result.index.duplicated(keep="first")]
 
     def get_candles(
         self,
-        figi:      str,
-        interval:  str = "1h",
+        figi: str,
+        interval: str = "1h",
         days_back: int = 100,
+        use_cache: bool = True,
     ) -> pd.DataFrame:
-        """Получить исторические свечи.
-
-        Returns:
-            DataFrame: index=time, columns=[open, high, low, close, volume]
-        """
-        if interval not in INTERVALS:
-            raise ValueError(f"Неизвестный интервал '{interval}'. Доступны: {list(INTERVALS)}")
-
         cache_key = f"{figi}_{interval}_{days_back}"
-        if cache_key in self._candle_cache:
-            logger.debug("Candle cache hit: %s", cache_key)
+        if use_cache and cache_key in self._candle_cache:
             return self._candle_cache[cache_key].copy()
 
-        try:
-            with Client(self.token, target=TARGET) as client:
-                candles = client.market_data.get_candles(
-                    figi     = figi,
-                    from_    = now() - timedelta(days=days_back),
-                    to       = now(),
-                    interval = INTERVALS[interval],
-                ).candles
-        except Exception as e:
-            logger.error("Failed to get candles for %s: %s", figi, e)
-            raise
+        df = self._load_candles_chunked(
+            figi=figi,
+            interval=interval,
+            days_back=days_back,
+        )
 
-        if not candles:
-            logger.warning("No candles returned for %s (%s, %dd)", figi, interval, days_back)
-            return pd.DataFrame()
+        if use_cache:
+            self._candle_cache[cache_key] = df
 
-        df = pd.DataFrame({
-            "time":   [c.time for c in candles],
-            "open":   [self._q(c.open)   for c in candles],
-            "high":   [self._q(c.high)   for c in candles],
-            "low":    [self._q(c.low)    for c in candles],
-            "close":  [self._q(c.close)  for c in candles],
-            "volume": [c.volume          for c in candles],
-        }).set_index("time")
-
-        self._candle_cache[cache_key] = df
         logger.info("Loaded %d candles: %s %s %dd", len(df), figi, interval, days_back)
         return df.copy()
 
-
     def get_candles_by_uid(
         self,
-        uid:       str,
-        interval:  str = "1d",
+        uid: str,
+        interval: str = "1d",
         days_back: int = 730,
+        use_cache: bool = True,
     ) -> pd.DataFrame:
-        """Получить свечи по UID индикатива (IMOEX, Brent и т.д.)."""
-        if interval not in INTERVALS:
-            raise ValueError(f"Неизвестный интервал '{interval}'.")
-
         cache_key = f"uid_{uid}_{interval}_{days_back}"
-        if cache_key in self._candle_cache:
+        if use_cache and cache_key in self._candle_cache:
             return self._candle_cache[cache_key].copy()
 
-        try:
-            with Client(self.token, target=TARGET) as client:
-                candles = client.market_data.get_candles(
-                    instrument_id = uid,
-                    from_         = now() - timedelta(days=days_back),
-                    to            = now(),
-                    interval      = INTERVALS[interval],
-                ).candles
-        except Exception as e:
-            logger.error("Failed to get candles by uid %s: %s", uid, e)
-            raise
+        df = self._load_candles_chunked(
+            uid=uid,
+            interval=interval,
+            days_back=days_back,
+        )
 
-        if not candles:
-            logger.warning("No candles for uid=%s", uid)
-            return pd.DataFrame()
+        if use_cache:
+            self._candle_cache[cache_key] = df
 
-        df = pd.DataFrame({
-            "time":   [c.time for c in candles],
-            "open":   [self._q(c.open)   for c in candles],
-            "high":   [self._q(c.high)   for c in candles],
-            "low":    [self._q(c.low)    for c in candles],
-            "close":  [self._q(c.close)  for c in candles],
-            "volume": [c.volume          for c in candles],
-        }).set_index("time")
-
-        self._candle_cache[cache_key] = df
-        logger.info("Loaded %d candles by uid: %s %s %dd",
-                    len(df), uid, interval, days_back)
+        logger.info("Loaded %d candles by uid: %s %s %dd", len(df), uid, interval, days_back)
         return df.copy()
-
-    # ── Список инструментов ───────────────────────────────
-
-    def get_all_tickers(self) -> pd.DataFrame:
-        """Все акции: ticker, figi, name, currency."""
-        if not self._figi_loaded:
-            self._load_figi_cache()
-        try:
-            with Client(self.token, target=TARGET) as client:
-                instruments = client.instruments.shares(
-                    instrument_status=1
-                ).instruments
-            return pd.DataFrame([{
-                "ticker":   i.ticker,
-                "figi":     i.figi,
-                "name":     i.name,
-                "currency": i.currency,
-            } for i in instruments])
-        except Exception as e:
-            logger.error("Failed to get all tickers: %s", e)
-            return pd.DataFrame()
-
-    # ── Кэш ───────────────────────────────────────────────
-
-    def clear_cache(self) -> None:
-        """Очистить кэш свечей (FIGI кэш не сбрасывается)."""
-        self._candle_cache.clear()
-        logger.info("Candle cache cleared")
-
-    def clear_all_cache(self) -> None:
-        """Полный сброс всех кэшей."""
-        self._candle_cache.clear()
-        self._figi_cache.clear()
-        self._figi_loaded = False
-        logger.info("All caches cleared")
-
-    
-
-    # ── Утилиты ───────────────────────────────────────────
-
-    @staticmethod
-    def _q(quotation) -> float:
-        """Quotation → float."""
-        return quotation.units + quotation.nano / 1e9

@@ -149,7 +149,7 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
             seq_params.extend(list(module.parameters()))
 
     for epoch in range(1, n_epochs + 1):
-        criterion.focal.set_gamma(epoch, warmup_epochs=10)
+        criterion.focal.set_gamma(epoch, warmup_epochs=5)
 
         model.train(); criterion.train()
         total_cls = 0.0; total_reg = 0.0; total_aux = 0.0; n_steps = 0
@@ -388,9 +388,9 @@ def train(model_path='ml/model_multiscale_v3.pt', use_hourly=True,
 
     wrs        = _make_weighted_sampler(y_tr)
     tr_loader  = _make_loader_v3(tr_subset, CFG.batch_size,
-                                  shuffle=False, sampler=wrs, num_workers=0)
+                                  shuffle=False, sampler=wrs, num_workers=2)
     val_loader = _make_loader_v3(val_subset, CFG.batch_size,
-                                  shuffle=False, num_workers=0)
+                                  shuffle=False, num_workers=2)
     te_ds      = Subset(dataset, idx_test.tolist())
     n_ind      = len(INDICATOR_COLS)
 

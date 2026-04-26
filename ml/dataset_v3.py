@@ -24,6 +24,8 @@ import pandas as pd
 from typing import Optional
 import torch
 from torch.utils.data import Dataset as TorchDataset
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -251,52 +253,27 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
 
 def load_imoex() -> 'pd.DataFrame | None':
     from api.routes.candles import get_client
-    import time as _time
-    from datetime import timedelta
-    from t_tech.invest import Client, CandleInterval
-    from t_tech.invest.utils import now as _now
 
     client = get_client()
-    TARGET = "invest-public-api.tbank.ru:443"
-
     try:
         uid = client.find_indicative_uid("IMOEX")
         if not uid:
             raise ValueError("UID для IMOEX не найден")
 
-        CHUNK_DAYS = 365
-        all_frames = []; end = _now(); remaining = CFG.days_back; chunk_num = 0
+        df = client.get_candles_by_uid(
+            uid=uid,
+            interval="1d",
+            days_back=CFG.days_back,
+        )
 
-        while remaining > 0:
-            chunk = min(remaining, CHUNK_DAYS); start = end - timedelta(days=chunk)
-            try:
-                with Client(client.token, target=TARGET) as api:
-                    candles = api.market_data.get_candles(
-                        instrument_id=uid, from_=start, to=end,
-                        interval=CandleInterval.CANDLE_INTERVAL_DAY,
-                    ).candles
-                if candles:
-                    df_chunk = pd.DataFrame({
-                        "time":   [cdl.time for cdl in candles],
-                        "open":   [client._q(cdl.open)  for cdl in candles],
-                        "high":   [client._q(cdl.high)  for cdl in candles],
-                        "low":    [client._q(cdl.low)   for cdl in candles],
-                        "close":  [client._q(cdl.close) for cdl in candles],
-                        "volume": [cdl.volume for cdl in candles],
-                    }).set_index("time")
-                    all_frames.append(df_chunk)
-                chunk_num += 1
-            except Exception as e:
-                print(f"  [WARN] IMOEX chunk {start.date()}→{end.date()}: {e}")
-            end = start; remaining -= chunk; _time.sleep(0.1)
+        if df is None or df.empty:
+            raise ValueError("Ни одна свеча IMOEX не загружена")
 
-        if not all_frames:
-            raise ValueError("Ни один чанк IMOEX не загружен")
-
-        df = pd.concat(all_frames).sort_index()
-        df = df[~df.index.duplicated(keep='first')]
-        print(f"  IMOEX загружен: {len(df)} свечей ({chunk_num} чанков)")
+        df = df.sort_index()
+        df = df[~df.index.duplicated(keep="first")]
+        print(f"  IMOEX загружен: {len(df)} свечей")
         return df
+
     except Exception as e:
         print(f"  [WARN] IMOEX: {e} → RS признаки будут нулями")
         return None
@@ -371,40 +348,20 @@ def _aux_cache_valid(ticker: str) -> bool:
 # ──────────────────────────────────────────────────────────────────
 
 def _load_hourly_candles(client, figi: str, days_back: int = None):
-    import time as _time
-    from datetime import timedelta
-    from t_tech.invest import Client, CandleInterval
-    from t_tech.invest.utils import now as _now
+    if days_back is None:
+        days_back = CFG.days_back
 
-    if days_back is None: days_back = CFG.days_back
-    CHUNK_DAYS = 85; TARGET = "invest-public-api.tbank.ru:443"
-    all_frames = []; end = _now(); remaining = days_back; chunk_num = 0
+    result = client.get_candles(
+        figi=figi,
+        interval="1h",
+        days_back=days_back,
+    )
 
-    while remaining > 0:
-        chunk = min(remaining, CHUNK_DAYS); start = end - timedelta(days=chunk)
-        try:
-            with Client(client.token, target=TARGET) as api:
-                candles = api.market_data.get_candles(
-                    figi=figi, from_=start, to=end,
-                    interval=CandleInterval.CANDLE_INTERVAL_HOUR,
-                ).candles
-            if candles:
-                df_chunk = pd.DataFrame({
-                    "time":   [c.time for c in candles],
-                    "open":   [client._q(c.open)  for c in candles],
-                    "high":   [client._q(c.high)  for c in candles],
-                    "low":    [client._q(c.low)   for c in candles],
-                    "close":  [client._q(c.close) for c in candles],
-                    "volume": [c.volume            for c in candles],
-                }).set_index("time")
-                all_frames.append(df_chunk); chunk_num += 1
-        except Exception as e:
-            print(f"  [WARN] hourly chunk {start.date()}→{end.date()}: {e}")
-        end = start; remaining -= chunk; _time.sleep(0.15)
+    if result is None or result.empty:
+        print("  [WARN] Часовые свечи: ни один чанк не загружен")
+        return None
 
-    if not all_frames:
-        print("  [WARN] Часовые свечи: ни один чанк не загружен"); return None
-    result = pd.concat(all_frames).sort_index()
+    result = result.sort_index()
     return result[~result.index.duplicated(keep="first")]
 
 
@@ -448,45 +405,22 @@ def _build_hourly_windows(hourly_df, daily_df, valid_indices):
 
 
 def _load_daily_candles_chunked(client, figi: str, days_back: int = None) -> pd.DataFrame:
-    import time as _time
-    from datetime import timedelta
-    from t_tech.invest import Client, CandleInterval
-    from t_tech.invest.utils import now as _now
+    if days_back is None:
+        days_back = CFG.days_back
 
-    if days_back is None: days_back = CFG.days_back
-    CHUNK_DAYS = 365; TARGET = "invest-public-api.tbank.ru:443"
-    all_frames = []; end = _now(); remaining = days_back; chunk_num = 0
+    result = client.get_candles(
+        figi=figi,
+        interval="1d",
+        days_back=days_back,
+    )
 
-    while remaining > 0:
-        chunk = min(remaining, CHUNK_DAYS); start = end - timedelta(days=chunk)
-        try:
-            with Client(client.token, target=TARGET) as api:
-                candles = api.market_data.get_candles(
-                    figi=figi, from_=start, to=end,
-                    interval=CandleInterval.CANDLE_INTERVAL_DAY,
-                ).candles
-            if candles:
-                df_chunk = pd.DataFrame({
-                    "time":   [cdl.time for cdl in candles],
-                    "open":   [client._q(cdl.open)  for cdl in candles],
-                    "high":   [client._q(cdl.high)  for cdl in candles],
-                    "low":    [client._q(cdl.low)   for cdl in candles],
-                    "close":  [client._q(cdl.close) for cdl in candles],
-                    "volume": [cdl.volume for cdl in candles],
-                }).set_index("time")
-                all_frames.append(df_chunk)
-            chunk_num += 1
-        except Exception as e:
-            print(f"  [WARN] daily chunk {start.date()}→{end.date()}: {e}")
-        end = start; remaining -= chunk; _time.sleep(0.1)
-
-    if not all_frames:
-        print(f"  [WARN] Дневные свечи: ни один чанк не загружен")
+    if result is None or result.empty:
+        print("  [WARN] Дневные свечи: ни один чанк не загружен")
         return pd.DataFrame()
 
-    result = pd.concat(all_frames).sort_index()
-    result = result[~result.index.duplicated(keep='first')]
-    print(f"  Дневные свечи: {len(result)} ({chunk_num} чанков, {days_back} дней)")
+    result = result.sort_index()
+    result = result[~result.index.duplicated(keep="first")]
+    print(f"  Дневные свечи: {len(result)} ({days_back} дней)")
     return result
 
 
@@ -973,102 +907,213 @@ def build_multiscale_dataset_v3(
 # ══════════════════════════════════════════════════════════════════
 # Полный датасет
 # ══════════════════════════════════════════════════════════════════
+def _timed_call(fn, *args, **kwargs):
+    t0 = time.perf_counter()
+    result = fn(*args, **kwargs)
+    return result, time.perf_counter() - t0
+
+
+def _process_one_ticker_parallel(
+    ticker: str,
+    imoex,
+    use_hourly: bool,
+    force_rebuild: bool,
+):
+    from api.routes.candles import get_client
+
+    t_total0 = time.perf_counter()
+    client = get_client()
+
+    figi = client.find_figi(ticker)
+    if not figi:
+        return {"ticker": ticker, "ok": False, "reason": "FIGI not found"}
+
+    with ThreadPoolExecutor(max_workers=2) as io_pool:
+        fut_daily = io_pool.submit(_timed_call, _load_daily_candles_chunked, client, figi)
+        fut_ctx_raw = io_pool.submit(_timed_call, load_context_series, ticker)
+        fut_hourly = None
+
+        (df, t_daily) = fut_daily.result()
+        (ctx_series, t_ctx_load) = fut_ctx_raw.result()
+
+        if use_hourly:
+            hourly_df, t_hourly = _timed_call(_load_hourly_candles, client, figi)
+        else:
+            hourly_df, t_hourly = None, 0.0
+
+    if df is None or df.empty:
+        return {"ticker": ticker, "ok": False, "reason": "empty daily"}
+
+    t_ctx_build0 = time.perf_counter()
+    ctx_feats = (
+        build_context_features(
+            ctx_series,
+            df.index,
+            ticker=ticker,
+            imoex_close=imoex["close"] if imoex is not None else None,
+        )
+        if ctx_series is not None else None
+    )
+    t_ctx_build = time.perf_counter() - t_ctx_build0
+
+    t_build0 = time.perf_counter()
+    imgs, nums, cls, ohlc, ctx, hourly, aux = build_multiscale_dataset_v3(
+        df,
+        imoex,
+        ctx_feats,
+        ticker=ticker,
+        hourly_df=hourly_df,
+        force_rebuild=force_rebuild,
+    )
+    t_build = time.perf_counter() - t_build0
+
+    if len(cls) == 0:
+        return {"ticker": ticker, "ok": False, "reason": "empty cls", "df": df}
+
+    if ctx is not None and len(ctx) > 0:
+        np.save(_ctx_path(ticker), ctx)
+
+    total_s = time.perf_counter() - t_total0
+    return {
+        "ticker": ticker,
+        "ok": True,
+        "df": df,
+        "n": int(len(cls)),
+        "ctx_dim": int(ctx.shape[1]) if ctx is not None and len(ctx) > 0 else None,
+        "timing": {
+            "daily_s": round(t_daily, 2),
+            "hourly_s": round(t_hourly, 2),
+            "ctx_load_s": round(t_ctx_load, 2),
+            "ctx_build_s": round(t_ctx_build, 2),
+            "build_s": round(t_build, 2),
+            "total_s": round(total_s, 2),
+        },
+    }
 
 def build_full_multiscale_dataset_v3(
     force_rebuild: bool = False,
     use_hourly: bool = True,
     ticker_filter: Optional[list] = None,
+    max_ticker_workers: int = 2,
 ):
     from api.routes.candles import get_client
     from ml.cache_manager import (
         _load_meta, _save_meta,
         ticker_cache_valid, probe_freshness, update_meta,
     )
-    client = get_client()
-    imoex  = load_imoex()
-    meta   = _load_meta()
 
-    # БАГ 1 FIX: в проверке кэша тоже учитываем aux shape
+    client = get_client()
+    imoex = load_imoex()
+    meta = _load_meta()
+
     def _ticker_fully_valid(t: str) -> bool:
         return ticker_cache_valid(t, meta) and _aux_cache_valid(t)
 
-    all_cached = all(_ticker_fully_valid(t) for t in CFG.tickers)
+    tickers_to_use = (
+        CFG.tickers if ticker_filter is None
+        else [t for t in CFG.tickers if t in ticker_filter]
+    )
+    if not tickers_to_use:
+        raise RuntimeError(f"ticker_filter={ticker_filter} не совпал ни с одним тикером")
+
+    all_cached = all(_ticker_fully_valid(t) for t in tickers_to_use)
 
     if all_cached and not force_rebuild:
         print("  Все тикеры в кэше. probe-проверка актуальности...")
-        if probe_freshness(client, CFG.tickers, meta):
+        if probe_freshness(client, tickers_to_use, meta):
             print("  ✓ Кэш актуален (aux v3.4.2)")
             return _load_all_from_cache(meta, use_hourly=use_hourly)
         print("  Кэш устарел — обновляем изменившиеся тикеры")
 
-    records = []; all_cls = []; ctx_dim = None; ticker_lengths = []
-    tickers_to_use = (CFG.tickers if ticker_filter is None
-                      else [t for t in CFG.tickers if t in ticker_filter])
-    if not tickers_to_use:
-        raise RuntimeError(f"ticker_filter={ticker_filter} не совпал ни с одним тикером")
+    records = []
+    all_cls = []
+    ctx_dim = None
+    ticker_lengths = []
 
+    rebuild_tickers = []
+
+    # 1) Быстро загружаем всё, что уже валидно в кэше
     for ticker in tickers_to_use:
-        # БАГ 1 FIX: проверяем _aux_cache_valid, не просто os.path.exists
         if not force_rebuild and _ticker_fully_valid(ticker):
             print(f"  {ticker}: кэш v3.4.2 актуален ✓")
-            cls  = np.load(_cls_path(ticker), mmap_mode="r")
+            cls = np.load(_cls_path(ticker), mmap_mode="r")
+
             ohlc_p = _ohlc_path(ticker)
             if os.path.exists(ohlc_p):
                 oc = np.load(ohlc_p, mmap_mode="r")
                 if (~np.isfinite(oc)).sum() > 0:
-                    np.save(ohlc_p, np.nan_to_num(
-                        np.array(oc), nan=0., posinf=0., neginf=0.))
+                    np.save(ohlc_p, np.nan_to_num(np.array(oc), nan=0., posinf=0., neginf=0.))
+
             n = len(cls)
-            for local_idx in range(n): records.append((ticker, local_idx))
-            all_cls.append(cls); ticker_lengths.append((ticker, n))
-            cp = _ctx_path(ticker)
-            if os.path.exists(cp) and ctx_dim is None:
-                ctx_dim = np.load(cp, mmap_mode="r").shape[1]
-            continue
-
-        if not _aux_cache_valid(ticker):
-            print(f"  {ticker}: aux невалиден (старый кэш) → rebuild")
-
-        print(f"  Загружаем {ticker} из API...")
-        try:
-            figi = client.find_figi(ticker)
-            if not figi: continue
-
-            df = _load_daily_candles_chunked(client, figi)
-            if df is None or df.empty: continue
-
-            hourly_df  = _load_hourly_candles(client, figi) if use_hourly else None
-            ctx_series = load_context_series(ticker)
-            ctx_feats  = build_context_features(
-                ctx_series, df.index, ticker=ticker,
-                imoex_close=imoex["close"] if imoex is not None else None,
-            ) if ctx_series is not None else None
-
-            imgs, nums, cls, ohlc, ctx, hourly, aux = build_multiscale_dataset_v3(
-                df, imoex, ctx_feats, ticker=ticker,
-                hourly_df=hourly_df, force_rebuild=force_rebuild,
-            )
-            if len(cls) == 0: continue
-
-            if ctx is not None and len(ctx) > 0:
-                np.save(_ctx_path(ticker), ctx)
-
-            update_meta(ticker, df, len(cls), meta); _save_meta(meta)
+            for local_idx in range(n):
+                records.append((ticker, local_idx))
+            all_cls.append(cls)
+            ticker_lengths.append((ticker, n))
 
             cp = _ctx_path(ticker)
             if os.path.exists(cp) and ctx_dim is None:
                 ctx_dim = np.load(cp, mmap_mode="r").shape[1]
+        else:
+            rebuild_tickers.append(ticker)
 
-            for local_idx in range(len(cls)): records.append((ticker, local_idx))
-            all_cls.append(cls); ticker_lengths.append((ticker, len(cls)))
-            print(f"  {ticker}: {len(cls)} сэмплов ✓")
+    # 2) Параллельный rebuild оставшихся тикеров
+    if rebuild_tickers:
+        n_workers = max(1, min(max_ticker_workers, len(rebuild_tickers)))
+        print(f"  parallel rebuild: {n_workers} ticker workers for {len(rebuild_tickers)} tickers")
 
-        except Exception as e:
-            print(f"  {ticker}: ошибка — {e}"); traceback.print_exc()
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {
+                pool.submit(
+                    _process_one_ticker_parallel,
+                    ticker,
+                    imoex,
+                    use_hourly,
+                    force_rebuild,
+                ): ticker
+                for ticker in rebuild_tickers
+            }
 
-    if not records: raise RuntimeError("Не удалось загрузить данные.")
+            for fut in as_completed(futures):
+                ticker = futures[fut]
+                try:
+                    res = fut.result()
+
+                    if not res.get("ok", False):
+                        print(f"  [SKIP] {ticker}: {res.get('reason', 'unknown')}")
+                        continue
+
+                    cls = np.load(_cls_path(ticker), mmap_mode="r")
+                    n = len(cls)
+
+                    for local_idx in range(n):
+                        records.append((ticker, local_idx))
+                    all_cls.append(cls)
+                    ticker_lengths.append((ticker, n))
+
+                    update_meta(ticker, res["df"], n, meta)
+                    _save_meta(meta)
+
+                    cp = _ctx_path(ticker)
+                    if os.path.exists(cp) and ctx_dim is None:
+                        ctx_dim = np.load(cp, mmap_mode="r").shape[1]
+
+                    tt = res["timing"]
+                    print(
+                        f"  {ticker}: {n} samples | "
+                        f"daily={tt['daily_s']:.2f}s hourly={tt['hourly_s']:.2f}s "
+                        f"ctx_load={tt['ctx_load_s']:.2f}s ctx_build={tt['ctx_build_s']:.2f}s "
+                        f"build={tt['build_s']:.2f}s total={tt['total_s']:.2f}s"
+                    )
+
+                except Exception as e:
+                    print(f"  {ticker}: ошибка — {e}")
+                    traceback.print_exc()
+
+    if not records:
+        raise RuntimeError("Не удалось загрузить данные.")
+
     ctx_dim = ctx_dim or 0
-    y_all   = np.concatenate(all_cls)
+    y_all = np.concatenate(all_cls)
     dataset = LazyMultiScaleDatasetV3(records, ctx_dim, use_hourly=use_hourly)
     return dataset, y_all, ctx_dim, ticker_lengths
 

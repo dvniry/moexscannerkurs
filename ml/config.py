@@ -153,5 +153,21 @@ class MLConfig:
     @property
     def effective_profit_thr(self) -> float:
         return self.profit_thr + 2 * self.broker_commission + self.min_net_profit
+    
+    @property
+    def daysback(self) -> int:
+        return self.days_back
+
+    @property
+    def batchsize(self) -> int:
+        return self.batch_size
+
+    @property
+    def futurebars(self) -> int:
+        return self.future_bars
+
+    @property
+    def labelatrk(self) -> float:
+        return self.label_atr_k
 
 CFG = MLConfig()

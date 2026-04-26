@@ -350,12 +350,9 @@ class AuxHead(nn.Module):
 
     def _init_head(self):
         with torch.no_grad():
-            # vol target: mean=0.016, std=0.006 → хотим pred в диапазоне [0, 0.04]
-            # последний слой: std=0.5 даст pred ~ N(0, 0.5) → после обучения сожмётся к 0.016
-            nn.init.normal_(self.net[-1].weight, std=0.5)
+            nn.init.normal_(self.net[-1].weight, std=0.01)   # было 0.5
             nn.init.zeros_(self.net[-1].bias)
-            # первый слой: стандартный xavier
-            nn.init.xavier_uniform_(self.net[0].weight, gain=0.5)
+            nn.init.xavier_uniform_(self.net[0].weight, gain=0.1)  # было 0.5
             nn.init.zeros_(self.net[0].bias)
 
     def forward(self, x):
@@ -366,11 +363,11 @@ class AuxLoss(nn.Module):
     """v3.19.2: возвращаем оригинальную логику + уменьшаем вес aux до 0.01"""
     VOL_SCALE = 0.02
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        # vol: предсказываем в абсолютных единицах (как раньше)
-        # pred уже инициализирован с std=0.5 → начальные pred ~ ±0.5
-        # target ~ 0.016 → начальный loss ~ (0.5-0.016)^2 = 0.23 (нормально)
-        vol_loss = F.mse_loss(pred[:, 0], target[:, 0].clamp(0., 0.15))
+    def forward(self, pred, target):
+        pred = pred.clamp(-1.0, 1.0)   # vol и tanh(skew) физически ограничены
+        vol_loss = F.mse_loss(pred[:, 0].clamp(0., 0.15),
+                              target[:, 0].clamp(0., 0.15))
+
 
         # skew: tanh нормировка
         skew_loss = F.mse_loss(
@@ -655,7 +652,7 @@ def evaluate_multiscale_v3(model, te_ds, y_test, ctx_dim,
     import json
 
     device = next(model.parameters()).device
-    loader = _make_loader_v3(te_ds, batch_size=256, shuffle=False, num_workers=0)
+    loader = _make_loader_v3(te_ds, batch_size=256, shuffle=False, num_workers=2)
     model.eval()
 
     all_preds = []; all_trues = []
