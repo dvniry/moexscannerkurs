@@ -62,20 +62,32 @@ class TinkoffDataClient:
 
         with Client(self.token, target=TARGET) as api:
             response = api.instruments.find_instrument(query=ticker)
+
+            # Приоритет 1: BBG FIGI + TQBR class_code
             for inst in response.instruments:
-                if getattr(inst, "ticker", None) == ticker and getattr(inst, "figi", None):
+                if (getattr(inst, "ticker", None) == ticker
+                        and getattr(inst, "figi", "").startswith("BBG")
+                        and getattr(inst, "class_code", None) == "TQBR"):
                     self._figi_cache[ticker] = inst.figi
                     if getattr(inst, "uid", None):
                         self._uid_cache[ticker] = inst.uid
                     return inst.figi
 
+            # Приоритет 2: любой BBG FIGI
+            for inst in response.instruments:
+                if (getattr(inst, "ticker", None) == ticker
+                        and getattr(inst, "figi", "").startswith("BBG")):
+                    self._figi_cache[ticker] = inst.figi
+                    if getattr(inst, "uid", None):
+                        self._uid_cache[ticker] = inst.uid
+                    return inst.figi
+
+            # Fallback: первый попавшийся (старое поведение)
             for inst in response.instruments:
                 if getattr(inst, "ticker", None) == ticker:
                     figi = getattr(inst, "figi", None)
                     if figi:
                         self._figi_cache[ticker] = figi
-                        if getattr(inst, "uid", None):
-                            self._uid_cache[ticker] = inst.uid
                         return figi
 
         logger.warning("FIGI not found for ticker=%s", ticker)

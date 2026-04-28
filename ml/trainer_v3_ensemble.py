@@ -27,10 +27,11 @@ from ml.dataset_v3 import (
     INDICATOR_COLS, class_distribution,
 )
 from ml.multiscale_cnn_v3 import (
-    MultiScaleHybridV3, MultiTaskLossV3, _make_loader_v3,
+    MultiScaleHybridV3, MultiTaskLossV3, EconomicLoss, _make_loader_v3,
     evaluate_multiscale_v3,
 )
-from ml.trainer_v3 import _run_epochs, _init_cls_head, _make_weighted_sampler
+from ml.trainer_v3 import _run_epochs, _init_cls_head, _make_weighted_sampler, _forward_unpack
+from ml.decision_layer import DecisionLayer, costs_from_config, SIG_BUY, SIG_HOLD, SIG_SELL
 
 
 def set_seed(seed: int):
@@ -147,12 +148,19 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
         reg_loss_weight=0.20,        # было 0.30 — выровнять с trainer_v3
         aux_loss_weight=0.01,        # было 0.05 — критично, см. БАГ #B
     ).to(device)
+
+    # Sprint 2: cost-aware loss + DecisionLayer
+    _costs = costs_from_config()
+    econ_criterion = EconomicLoss(cost_roundtrip=_costs.roundtrip).to(device)
+    decision_layer = DecisionLayer(_costs)
     
     backbone_ids = {id(p) for p in model.backbone.parameters()}
     hourly_ids   = ({id(p) for p in model.hourly_enc.parameters()}
                     if use_hourly and hasattr(model, 'hourly_enc') else set())
     cls_head_ids = {id(p) for p in model.cls_head.parameters()}
     dir_head_ids = {id(p) for p in model.dir_head.parameters()}
+    econ_head_ids = ({id(p) for p in model.econ_heads.parameters()}
+                     if hasattr(model, 'econ_heads') else set())
     crit_params  = list(criterion.parameters())
 
     param_groups = [
@@ -162,12 +170,15 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
          'lr': max_lr * 0.5,  'name': 'cls_head', 'weight_decay': 1e-4},
         {'params': list(model.dir_head.parameters()),
          'lr': max_lr,        'name': 'dir_head', 'weight_decay': 1e-4},
+        {'params': list(model.econ_heads.parameters()) if econ_head_ids else [],
+         'lr': max_lr * 1.5,  'name': 'econ_heads', 'weight_decay': 1e-4},
         {'params': [p for p in model.parameters()
                     if p.requires_grad
                     and id(p) not in backbone_ids
                     and id(p) not in hourly_ids
                     and id(p) not in cls_head_ids
-                    and id(p) not in dir_head_ids],
+                    and id(p) not in dir_head_ids
+                    and id(p) not in econ_head_ids],
          'lr': max_lr, 'name': 'other', 'weight_decay': 5e-3},
     ]
     if hourly_ids:
@@ -191,7 +202,9 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
         phase_name=f'S{seed}',
         ctx_dim=ctx_dim,
         use_hourly=use_hourly,
-        accum_steps=2)
+        accum_steps=2,
+        econ_criterion=econ_criterion,
+        decision_layer=decision_layer)
 
     print(f'\n  [SEED {seed}] Evaluation on test:')
 
@@ -207,29 +220,41 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
     from torch.utils.data import DataLoader
     loader = _make_loader_v3(te_ds, batch_size=256, shuffle=False, num_workers=0)
     all_cls_logits, all_dir_prob, all_ohlc_pred = [], [], []
+    all_mfe_mae, all_fill_prob, all_edge_pred = [], [], []   # Sprint 2
 
     with torch.no_grad():
         for batch in loader:
             imgs_dict, num_dict, cls_y, ohlc_y, ctx, hourly_data, *_ = batch
-            imgs  = {W: imgs_dict[W].to(device) for W in SCALES}
+            imgs = {W: imgs_dict[W].to(device) for W in SCALES}
             ctx_t = ctx.to(device) if ctx_dim > 0 else None
-            ht    = hourly_data.to(device) if use_hourly else None
-            nums  = {W: num_dict[W].to(device) for W in SCALES}
-            lo, op, _, dir_l = model_eval(imgs, nums, ctx_t, hourly=ht)
+            ht = hourly_data.to(device) if (use_hourly and hourly_data is not None) else None
+            nums = ({W: num_dict[W].to(device) for W in SCALES}
+                    if num_dict is not None else None)
+
+            lo, op, _, dir_l, _, econ_p = _forward_unpack(model_eval, imgs, nums, ctx_t, ht)
+
             all_cls_logits.append(torch.softmax(lo, dim=1).cpu().numpy())
             all_dir_prob.append(torch.sigmoid(dir_l).cpu().numpy())
             all_ohlc_pred.append(op.cpu().numpy())
+
+            if econ_p is not None:
+                all_mfe_mae.append(econ_p["mfe_mae"].cpu().numpy())
+                all_fill_prob.append(torch.sigmoid(econ_p["fill_logit"]).cpu().numpy())
+                all_edge_pred.append(econ_p["edge_pred"].cpu().numpy())
 
     # Val dir accuracy для взвешивания ансамбля
     val_dir_probs_list, val_trues_list = [], []
     with torch.no_grad():
         for batch in val_loader:
             imgs_dict, num_dict, cls_y, ohlc_y, ctx, hourly_data, *_ = batch
-            imgs  = {W: imgs_dict[W].to(device) for W in SCALES}
+            imgs = {W: imgs_dict[W].to(device) for W in SCALES}
             ctx_t = ctx.to(device) if ctx_dim > 0 else None
-            ht    = hourly_data.to(device) if use_hourly else None
-            nums  = {W: num_dict[W].to(device) for W in SCALES}
-            _, _, _, dir_l = model_eval(imgs, nums, ctx_t, hourly=ht)
+            ht = hourly_data.to(device) if (use_hourly and hourly_data is not None) else None
+            nums = ({W: num_dict[W].to(device) for W in SCALES}
+                    if num_dict is not None else None)
+
+            _, _, _, dir_l, _, _ = _forward_unpack(model_eval, imgs, nums, ctx_t, ht)
+
             val_dir_probs_list.append(torch.sigmoid(dir_l).cpu().numpy())
             val_trues_list.append(cls_y.numpy())
 
@@ -249,7 +274,7 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
     del model_eval
     torch.cuda.empty_cache()
 
-    return {
+    result = {
         'seed':        seed,
         'val_dir_acc': val_dir_acc,
         'path':        save_path,
@@ -257,6 +282,11 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
         'dir_prob':    np.concatenate(all_dir_prob),
         'ohlc_pred':   np.concatenate(all_ohlc_pred),
     }
+    if all_mfe_mae:
+        result['mfe_mae']   = np.concatenate(all_mfe_mae)
+        result['fill_prob'] = np.concatenate(all_fill_prob)
+        result['edge_pred'] = np.concatenate(all_edge_pred)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,6 +339,15 @@ def evaluate_ensemble(results: list, y_test: np.ndarray,
     ohlc_pred_avg = np.average(
         [r['ohlc_pred'] for r in results], axis=0, weights=weights)
 
+    # Sprint 2: усреднённые econ + DecisionLayer
+    has_econ = all('mfe_mae' in r for r in results)
+    if has_econ:
+        mfe_mae_avg   = np.average([r['mfe_mae']   for r in results], axis=0, weights=weights)
+        fill_prob_avg = np.average([r['fill_prob'] for r in results], axis=0, weights=weights)
+        edge_pred_avg = np.average([r['edge_pred'] for r in results], axis=0, weights=weights)
+    else:
+        mfe_mae_avg = fill_prob_avg = edge_pred_avg = None
+
     preds = cls_probs_avg.argmax(axis=1)
     trues = y_test
 
@@ -345,7 +384,51 @@ def evaluate_ensemble(results: list, y_test: np.ndarray,
         ])
         print(f'  🤝 Mean pairwise agreement: {agreement:.4f}')
 
-    return cls_probs_avg, dir_prob_avg, ohlc_pred_avg
+    # Sprint 2: применяем DecisionLayer к усреднённым предсказаниям
+    decision_signal = None
+    decision_confidence = None
+    if has_econ:
+        dl = DecisionLayer(costs_from_config())
+        dec = dl.decide_numpy(
+            dir_prob=dir_prob_avg,
+            mfe_mae=mfe_mae_avg,
+            fill_prob=fill_prob_avg,
+            edge_pred=edge_pred_avg,
+        )
+        decision_signal     = dec['signal']
+        decision_confidence = dec['confidence']
+
+        n_total = len(decision_signal)
+        n_buy   = int((decision_signal == SIG_BUY ).sum())
+        n_hold  = int((decision_signal == SIG_HOLD).sum())
+        n_sell  = int((decision_signal == SIG_SELL).sum())
+        print(f'\n  🎯 DECISION LAYER coverage: '
+              f'BUY={n_buy} ({n_buy/n_total:.1%}) | '
+              f'HOLD={n_hold} ({n_hold/n_total:.1%}) | '
+              f'SELL={n_sell} ({n_sell/n_total:.1%})')
+
+        # Hit rate на не-HOLD: BUY → trues==0, SELL → trues==2
+        is_buy_d  = decision_signal == SIG_BUY
+        is_sell_d = decision_signal == SIG_SELL
+        hit = np.zeros_like(decision_signal, dtype=bool)
+        hit[is_buy_d]  = (trues[is_buy_d]  == 0)
+        hit[is_sell_d] = (trues[is_sell_d] == 2)
+        not_hold = decision_signal != SIG_HOLD
+        if not_hold.any():
+            hit_rate = float(hit[not_hold].mean())
+            print(f'  🎯 Decision hit rate (BUY→UP / SELL→DOWN): {hit_rate:.4f} '
+                  f'(N={int(not_hold.sum())})')
+
+    return {
+        'cls_probs':    cls_probs_avg,
+        'dir_prob':     dir_prob_avg,
+        'ohlc_pred':    ohlc_pred_avg,
+        'mfe_mae':      mfe_mae_avg,
+        'fill_prob':    fill_prob_avg,
+        'edge_pred':    edge_pred_avg,
+        'decision_signal':     decision_signal,
+        'decision_confidence': decision_confidence,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -384,13 +467,18 @@ def main():
     y_tr   = y_all[idx_tr]
     y_test = y_all[idx_test]
 
-    # ── БАГ 1 FIX: собираем ohlc_test и atr_ratio одним проходом ──────────
+    # ── БАГ 1 FIX: собираем ohlc_test, econ_test и atr_ratio одним проходом ──
     print(f'\n  [ATR] Собираем atr_ratio для {len(idx_test)} тестовых сэмплов...')
     ohlc_test = []
+    econ_test = []   # Sprint 2
     for i in idx_test:
-        _, _, _, ohlc_y, _, _, *_ = dataset[int(i)]
-        ohlc_test.append(ohlc_y.numpy())
+        item = dataset[int(i)]
+        # imgs, nums, cls_y, ohlc_y, ctx, hourly, aux_y, intraday_y, intraday_mask, econ_y
+        ohlc_test.append(item[3].numpy())
+        if len(item) >= 10:
+            econ_test.append(item[9].numpy())
     ohlc_test = np.array(ohlc_test, dtype=np.float32)
+    econ_test = np.array(econ_test, dtype=np.float32) if econ_test else None
 
     # Единственное место сбора atr_ratio — никакого дублирования
     atr_ratio_arr = _collect_atr_ratio(dataset, idx_test)
@@ -453,13 +541,15 @@ def main():
 
     # ── Ансамблевая оценка ────────────────────────────────────────────────
     val_dir_accs = {r['seed']: r['val_dir_acc'] for r in results}
-    cls_avg, dir_avg, ohlc_avg = evaluate_ensemble(
+    ens = evaluate_ensemble(
         results, y_test, ohlc_test, val_dir_accs=val_dir_accs)
+    cls_avg  = ens['cls_probs']
+    dir_avg  = ens['dir_prob']
+    ohlc_avg = ens['ohlc_pred']
 
     # ── Сохранение ────────────────────────────────────────────────────────
     out_path = os.path.join(args.save_dir, 'ensemble_predictions.npz')
-    np.savez(
-        out_path,
+    save_kwargs = dict(
         cls_probs  = cls_avg,
         dir_prob   = dir_avg,
         ohlc_pred  = ohlc_avg,
@@ -467,6 +557,16 @@ def main():
         ohlc_test  = ohlc_test,
         atr_ratio  = atr_ratio_arr,
     )
+    # Sprint 2: econ + decision keys (back-compat: если econ нет — старые ключи)
+    if ens.get('mfe_mae') is not None:
+        save_kwargs['mfe_mae_pred']        = ens['mfe_mae']
+        save_kwargs['fill_prob']           = ens['fill_prob']
+        save_kwargs['edge_pred']           = ens['edge_pred']
+        save_kwargs['decision_signal']     = ens['decision_signal']
+        save_kwargs['decision_confidence'] = ens['decision_confidence']
+    if econ_test is not None and len(econ_test) > 0:
+        save_kwargs['econ_test'] = econ_test
+    np.savez(out_path, **save_kwargs)
     print(f'\n  📦 → {out_path}')
 
     # Финальная проверка сохранённых данных

@@ -16,6 +16,8 @@ CLS_NAMES = ['UP', 'FLAT', 'DOWN']
 
 
 def _compute_adaptive_threshold(df: pd.DataFrame) -> np.ndarray:
+    if df is None or len(df) == 0:
+        return np.empty((0,), dtype=np.float64)
     high  = df['high'].values.astype(np.float64)
     low   = df['low'].values.astype(np.float64)
     close = df['close'].values.astype(np.float64)
@@ -58,6 +60,13 @@ def _compute_atr_ratio(df: pd.DataFrame) -> np.ndarray:
 
 
 def build_ohlc_labels(df: pd.DataFrame):
+    if df is None or len(df) == 0:
+        return (
+            np.empty((0, CFG.future_bars * 4), dtype=np.float64),
+            np.empty((0,), dtype=np.int64),
+            np.empty((0,), dtype=bool),
+            np.empty((0,), dtype=np.float64),
+        )
     F     = CFG.future_bars
     N     = len(df)
     close = df['close'].values.astype(np.float64)
@@ -118,6 +127,115 @@ def build_ohlc_labels(df: pd.DataFrame):
             cls_labels[i] = CLS_FLAT
 
     return ohlc_labels, cls_labels, valid_mask, atr_ratio.astype(np.float32)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Sprint 2 — экономические таргеты (MFE / MAE / fill / net edge)
+# ══════════════════════════════════════════════════════════════════
+
+ECON_N_COLS = 11
+ECON_COL_NAMES = (
+    'future_ret',
+    'mfe_long', 'mae_long',
+    'mfe_short', 'mae_short',
+    'rr_long', 'rr_short',
+    'fill_long', 'fill_short',
+    'net_edge_long', 'net_edge_short',
+)
+
+
+def build_economic_targets(
+    df: pd.DataFrame,
+    valid_mask: np.ndarray,
+    future_bars: int = None,
+    commission: float = 0.0005,
+    slippage:   float = 0.0003,
+    spread:     float = 0.0002,
+) -> np.ndarray:
+    """Sprint 2: экономические таргеты для каждого бара.
+
+    Returns: [N, 11] float32. Колонки см. ECON_COL_NAMES.
+
+    Логика:
+      future_ret      = (close[i+F] - close[i]) / close[i]
+      mfe_long        = (max(highs[i+1..i+F]) - c0) / c0,  clamp[0, 0.20]
+      mae_long        = max(0, (c0 - min(lows[i+1..i+F])) / c0),  clamp[0, 0.20]
+      mfe_short       = (c0 - min(lows[i+1..i+F])) / c0,   clamp[0, 0.20]
+      mae_short       = max(0, (max(highs[i+1..i+F]) - c0) / c0), clamp[0, 0.20]
+      rr_long/short   = mfe / max(mae, 1e-6),               clamp[0, 10]
+      fill_long       = 1 if low[i+1] <= c0 * (1 - 2*slippage) else 0
+      fill_short      = 1 if high[i+1] >= c0 * (1 + 2*slippage) else 0
+      net_edge_long   = future_ret  - (commission + slippage)
+      net_edge_short  = -future_ret - (commission + slippage)
+
+    Для баров где valid_mask[i] = False — все нули (бар не пойдёт в обучение
+    из-за фильтра valid_all в dataset_v3.py).
+    """
+    if future_bars is None:
+        future_bars = CFG.future_bars
+
+    N = len(df)
+    out = np.zeros((N, ECON_N_COLS), dtype=np.float32)
+
+    if N == 0:
+        return out
+
+    close = df['close'].values.astype(np.float64)
+    high  = df['high'].values.astype(np.float64)
+    low   = df['low'].values.astype(np.float64)
+
+    cost_one_side = commission + slippage
+    slip2 = 2.0 * slippage
+    F = int(future_bars)
+    last_i = N - F
+
+    for i in range(last_i):
+        if not valid_mask[i]:
+            continue
+        c0 = close[i]
+        if c0 <= 1e-9:
+            continue
+
+        h_max = float(np.max(high[i + 1: i + 1 + F]))
+        l_min = float(np.min(low[i + 1: i + 1 + F]))
+        c_fut = float(close[i + F])
+
+        future_ret = (c_fut - c0) / c0
+
+        mfe_long  = (h_max - c0) / c0                         # >= 0 если был рост
+        mae_long  = max(0.0, (c0 - l_min) / c0)
+        mfe_short = max(0.0, (c0 - l_min) / c0)
+        mae_short = max(0.0, (h_max - c0) / c0)
+
+        mfe_long  = min(max(mfe_long, 0.0), 0.20)
+        mae_long  = min(mae_long, 0.20)
+        mfe_short = min(mfe_short, 0.20)
+        mae_short = min(mae_short, 0.20)
+
+        rr_long  = min(mfe_long  / max(mae_long,  1e-6), 10.0)
+        rr_short = min(mfe_short / max(mae_short, 1e-6), 10.0)
+
+        first_low  = float(low[i + 1])
+        first_high = float(high[i + 1])
+        fill_long  = 1.0 if first_low  <= c0 * (1.0 - slip2) else 0.0
+        fill_short = 1.0 if first_high >= c0 * (1.0 + slip2) else 0.0
+
+        net_edge_long  =  future_ret - cost_one_side
+        net_edge_short = -future_ret - cost_one_side
+
+        out[i, 0]  = future_ret
+        out[i, 1]  = mfe_long
+        out[i, 2]  = mae_long
+        out[i, 3]  = mfe_short
+        out[i, 4]  = mae_short
+        out[i, 5]  = rr_long
+        out[i, 6]  = rr_short
+        out[i, 7]  = fill_long
+        out[i, 8]  = fill_short
+        out[i, 9]  = net_edge_long
+        out[i, 10] = net_edge_short
+
+    return out
 
 
 def denormalize_ohlc(ohlc_norm: np.ndarray, atr_ratio: float,

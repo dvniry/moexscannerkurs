@@ -1,6 +1,8 @@
 карта шагов
 CHECKLIST.md
 .vscode
+.claude
+.vexp
 dataset_poster.png
 visualize_dataset.py
 cache/
@@ -9,7 +11,6 @@ eval_results.json
 _meta.json
 итог прогона.txt
 mt5_signals
-состояние проекта
 # Environment
 .env
 .env.*

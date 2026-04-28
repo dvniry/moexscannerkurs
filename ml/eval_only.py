@@ -23,6 +23,7 @@ class TemperatureScaler:
 
     def fit(self, model, val_loader, device, ctx_dim, use_hourly, scales):
         import torch, torch.nn.functional as F
+        from ml.trainer_v3 import _forward_unpack
 
         model.eval()
         all_logits, all_labels = [], []
@@ -35,7 +36,7 @@ class TemperatureScaler:
                 ht     = hourly_data.to(device) if use_hourly else None
                 nums   = {W: num_dict[W].to(device) for W in scales} \
                          if num_dict is not None else None
-                lo, _, _ = model(imgs, nums, ctx_t, hourly=ht)
+                lo, _, _, _, _, _ = _forward_unpack(model, imgs, nums, ctx_t, ht)
                 all_logits.append(lo.cpu())
                 all_labels.append(cls_y)
 
@@ -79,6 +80,7 @@ def evaluate_with_tta(model, te_ds, y_test, ctx_dim,
     from sklearn.metrics import classification_report, f1_score
     from ml.multiscale_cnn_v3 import _make_loader_v3
     from ml.config import SCALES
+    from ml.trainer_v3 import _forward_unpack
 
     device = next(model.parameters()).device
     loader = _make_loader_v3(te_ds, batch_size=256, shuffle=False, num_workers=0)
@@ -106,7 +108,7 @@ def evaluate_with_tta(model, te_ds, y_test, ctx_dim,
                     n = {W: nums[W] + torch.randn_like(nums[W]) * tta_noise_std
                          for W in SCALES} if nums is not None else None
 
-                lo, op, _ = model(imgs, n, ctx_t, hourly=ht)
+                lo, op, _, _, _, _ = _forward_unpack(model, imgs, n, ctx_t, ht)
 
                 # применяем Temperature Scaling если есть
                 if scaler is not None:

@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 import torch
+import math
 from torch.utils.data import Dataset as TorchDataset
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -34,7 +35,7 @@ from ml.candle_render_v2 import (
     render_candles as _render_candles_orig,
     N_RENDER_CHANNELS as _N_RENDER_CHANNELS_ORIG,
 )
-from ml.labels_ohlc import build_ohlc_labels
+from ml.labels_ohlc import build_ohlc_labels, build_economic_targets, ECON_N_COLS
 from ml.context_loader import load_context_series, build_context_features
 from ml.hourly_encoder import (
     render_hourly_candles, N_HOURLY_CHANNELS,
@@ -45,7 +46,7 @@ from ml.hourly_encoder import (
 # Heikin-Ashi — 4-й канал свечного рендера
 # ══════════════════════════════════════════════════════════════════
 
-CACHE_VERSION = "v3.4.2"   # ← bumped: aux shape изменился
+CACHE_VERSION = "v3.6.0"   # Sprint 2: future_bars=5, econ-таргеты [N,11]
 N_RENDER_CHANNELS = _N_RENDER_CHANNELS_ORIG + 1   # 3 → 4
 
 
@@ -286,20 +287,45 @@ def class_distribution(y: np.ndarray) -> None:
         print(f"  {name:4s}: {count:5d} ({count / total * 100:.1f}%)")
 
 
-def _align_arrays(imgs, nums, cls, ohlc, ctx=None, hourly=None, aux=None):
+def _align_arrays(
+    imgs, nums, cls, ohlc, ctx=None, hourly=None, aux=None,
+    intraday_targets=None, intraday_mask=None, econ=None,
+):
     n = min(len(cls), len(ohlc))
     for W in SCALES:
         n = min(n, len(imgs[W]), len(nums[W]))
-    if ctx    is not None: n = min(n, len(ctx))
-    if hourly is not None: n = min(n, len(hourly))
-    if aux    is not None: n = min(n, len(aux))
-    cls  = cls[:n]; ohlc = ohlc[:n]
+    if ctx is not None:
+        n = min(n, len(ctx))
+    if hourly is not None:
+        n = min(n, len(hourly))
+    if aux is not None:
+        n = min(n, len(aux))
+    if intraday_targets is not None:
+        n = min(n, len(intraday_targets))
+    if intraday_mask is not None:
+        n = min(n, len(intraday_mask))
+    if econ is not None:
+        n = min(n, len(econ))
+
+    cls = cls[:n]
+    ohlc = ohlc[:n]
     imgs = {W: imgs[W][:n] for W in SCALES}
     nums = {W: nums[W][:n] for W in SCALES}
-    if ctx    is not None: ctx    = ctx[:n]
-    if hourly is not None: hourly = hourly[:n]
-    if aux    is not None: aux    = aux[:n]
-    return imgs, nums, cls, ohlc, ctx, hourly, aux
+
+    if ctx is not None:
+        ctx = ctx[:n]
+    if hourly is not None:
+        hourly = hourly[:n]
+    if aux is not None:
+        aux = aux[:n]
+    if intraday_targets is not None:
+        intraday_targets = intraday_targets[:n]
+    if intraday_mask is not None:
+        intraday_mask = intraday_mask[:n]
+    if econ is not None:
+        econ = econ[:n]
+
+    return imgs, nums, cls, ohlc, ctx, hourly, aux, intraday_targets, intraday_mask, econ
 
 
 def _cache_dir():
@@ -311,12 +337,35 @@ def _cls_path(ticker):    return f"{_cache_dir()}/cls_{ticker}.npy"
 def _ohlc_path(ticker):   return f"{_cache_dir()}/ohlc_{ticker}.npy"
 def _ctx_path(ticker):    return f"{_cache_dir()}/ctx_{ticker}.npy"
 def _hourly_path(ticker): return f"{_cache_dir()}/hourly_{ticker}.npy"
+def _intraday_targets_path(ticker): return f"{_cache_dir()}/intraday_targets_{ticker}.npy"
+def _intraday_mask_path(ticker): return f"{_cache_dir()}/intraday_mask_{ticker}.npy"
 def _aux_path(ticker):    return f"{_cache_dir()}/aux_{ticker}.npy"
+def _econ_path(ticker):   return f"{_cache_dir()}/econ_{ticker}.npy"
 
 
 # ──────────────────────────────────────────────────────────────────
 # Проверка aux кэша — НОВОЕ (БАГ 1 FIX)
 # ──────────────────────────────────────────────────────────────────
+
+def _econ_cache_valid(ticker: str) -> bool:
+    """Sprint 2: проверяет что econ_{ticker}.npy существует и имеет shape [N, ECON_N_COLS].
+
+    Если форма не та — нужен rebuild. Per-feature валидация:
+    инвалидирует только econ-кэш, не трогая тяжёлые hourly/intraday/imgs.
+    """
+    p = _econ_path(ticker)
+    if not os.path.exists(p):
+        return False
+    try:
+        arr = np.load(p, mmap_mode="r")
+        if arr.ndim != 2 or arr.shape[1] != ECON_N_COLS:
+            print(f"  [ECON] {ticker}: shape={arr.shape}, ожидается [N,{ECON_N_COLS}] — rebuild")
+            return False
+        return True
+    except Exception as e:
+        print(f"  [ECON] {ticker}: ошибка чтения — {e}")
+        return False
+
 
 def _aux_cache_valid(ticker: str) -> bool:
     """Проверяет что aux кэш существует и имеет правильную форму [N, 3].
@@ -403,25 +452,102 @@ def _build_hourly_windows(hourly_df, daily_df, valid_indices):
     print()
     return np.array(results, dtype=np.float32)
 
+def _build_intraday_targets_for_day(hourly_by_date, daily_date, d_high, d_low):
+    target = np.zeros((N_HOURS_PER_DAY,), dtype=np.float32)
+    mask = np.zeros((N_HOURS_PER_DAY,), dtype=np.float32)
+
+    if hourly_by_date is None:
+        return target, mask
+
+    day = daily_date.date() if hasattr(daily_date, "date") else pd.Timestamp(daily_date).date()
+    day_h = hourly_by_date.get(day)
+
+    if day_h is None or len(day_h) == 0:
+        return target, mask
+
+    day_h = day_h.sort_index().iloc[:N_HOURS_PER_DAY]
+    denom = max(float(d_high) - float(d_low), 1e-9)
+
+    close_pos = ((day_h["close"].astype(float).values - float(d_low)) / denom).astype(np.float32)
+    close_pos = np.clip(close_pos, 0.0, 1.0)
+
+    n = min(len(close_pos), N_HOURS_PER_DAY)
+    target[:n] = close_pos[:n]
+    mask[:n] = 1.0
+    return target, mask
+
+
+def _build_intraday_targets_windows(hourly_df, daily_df, valid_indices):
+    hourly_by_date = None
+    if hourly_df is not None and not hourly_df.empty:
+        hourly_by_date = {d: g for d, g in hourly_df.groupby(hourly_df.index.date)}
+
+    targets = []
+    masks = []
+
+    for i, idx in enumerate(valid_indices):
+        if i % 500 == 0 and i:
+            print(f" intraday target render {i}/{len(valid_indices)}", end="\r")
+
+        start_day = max(0, idx - N_INTRADAY_DAYS + 1)
+        days_win = daily_df.iloc[start_day: idx + 1]
+
+        day_targets = []
+        day_masks = []
+
+        for row_date in days_win.index:
+            tgt, msk = _build_intraday_targets_for_day(
+                hourly_by_date,
+                row_date,
+                float(days_win.loc[row_date, "high"]),
+                float(days_win.loc[row_date, "low"]),
+            )
+            day_targets.append(tgt)
+            day_masks.append(msk)
+
+        while len(day_targets) < N_INTRADAY_DAYS:
+            day_targets.insert(0, np.zeros((N_HOURS_PER_DAY,), dtype=np.float32))
+            day_masks.insert(0, np.zeros((N_HOURS_PER_DAY,), dtype=np.float32))
+
+        targets.append(np.stack(day_targets[-N_INTRADAY_DAYS:]))
+        masks.append(np.stack(day_masks[-N_INTRADAY_DAYS:]))
+
+    print()
+    return np.array(targets, dtype=np.float32), np.array(masks, dtype=np.float32)
 
 def _load_daily_candles_chunked(client, figi: str, days_back: int = None) -> pd.DataFrame:
     if days_back is None:
         days_back = CFG.days_back
 
-    result = client.get_candles(
-        figi=figi,
-        interval="1d",
-        days_back=days_back,
-    )
+    chunks = []
+    days_per_chunk = 365  # T-Invest даёт ~1 год за запрос
+    n_chunks = math.ceil(days_back / days_per_chunk)
 
-    if result is None or result.empty:
+    for i in range(n_chunks):
+        chunk_days = min(days_per_chunk, days_back - i * days_per_chunk)
+        offset_days = days_back - i * days_per_chunk
+        try:
+            result = client.get_candles(
+                figi=figi,
+                interval="1d",
+                days_back=offset_days,
+            )
+            if result is not None and not result.empty:
+                chunks.append(result)
+            time.sleep(0.15)  # rate limit
+        except Exception as e:
+            print(f"  [ERR] chunk {i}/{n_chunks} for {figi}: {e}")
+            continue
+
+    if not chunks:
         print("  [WARN] Дневные свечи: ни один чанк не загружен")
         return pd.DataFrame()
 
-    result = result.sort_index()
-    result = result[~result.index.duplicated(keep="first")]
-    print(f"  Дневные свечи: {len(result)} ({days_back} дней)")
-    return result
+    df = pd.concat(chunks)
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep="first")]
+    print(f"  Дневные свечи: {len(df)} ({days_back} дней)")
+    return df
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -436,36 +562,62 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         self._cache     = {}
 
     def _load(self, ticker: str):
-        if ticker in self._cache: return self._cache[ticker]
+        if ticker in self._cache:
+            return self._cache[ticker]
+
         data = {}
         for W in SCALES:
-            data[W]          = np.load(_img_path(ticker, W),  mmap_mode="r")
+            data[W] = np.load(_img_path(ticker, W), mmap_mode="r")
             p = _num_path(ticker, W)
             data[f"num_{W}"] = np.load(p, mmap_mode="r") if os.path.exists(p) else None
-        data["cls"]  = np.load(_cls_path(ticker),  mmap_mode="r")
+
+        data["cls"] = np.load(_cls_path(ticker), mmap_mode="r")
         data["ohlc"] = np.load(_ohlc_path(ticker), mmap_mode="r")
+
         cp = _ctx_path(ticker)
         data["ctx"] = np.load(cp, mmap_mode="r") if os.path.exists(cp) else None
+
         hp = _hourly_path(ticker)
-        data["hourly"] = (np.load(hp, mmap_mode="r")
-                          if (self.use_hourly and os.path.exists(hp)) else None)
+        data["hourly"] = np.load(hp, mmap_mode="r") if (self.use_hourly and os.path.exists(hp)) else None
+
         ap = _aux_path(ticker)
         data["aux"] = np.load(ap, mmap_mode="r") if os.path.exists(ap) else None
 
-        # Валидация aux shape при загрузке
+        itp = _intraday_targets_path(ticker)
+        imp = _intraday_mask_path(ticker)
+        data["intraday_targets"] = np.load(itp, mmap_mode="r") if os.path.exists(itp) else None
+        data["intraday_mask"] = np.load(imp, mmap_mode="r") if os.path.exists(imp) else None
+
+        ep = _econ_path(ticker)
+        data["econ"] = np.load(ep, mmap_mode="r") if os.path.exists(ep) else None
+
         if data["aux"] is not None:
             if data["aux"].ndim != 2 or data["aux"].shape[1] < 3:
-                print(f"  [WARN] {ticker}: aux.shape={data['aux'].shape} "
-                      f"— нужен --rebuild (ожидается [N,3])")
-                # Не крашимся — работаем с тем что есть
+                print(f"  [WARN] {ticker}: aux.shape={data['aux'].shape} — нужен --rebuild (ожидается [N,3])")
+
+        if data["econ"] is not None:
+            if data["econ"].ndim != 2 or data["econ"].shape[1] != ECON_N_COLS:
+                print(f"  [WARN] {ticker}: econ.shape={data['econ'].shape} — нужен --rebuild (ожидается [N,{ECON_N_COLS}])")
 
         n = min(len(data["cls"]), len(data["ohlc"]))
         for W in SCALES:
             n = min(n, len(data[W]))
-            if data[f"num_{W}"] is not None: n = min(n, len(data[f"num_{W}"]))
-        if data["ctx"]    is not None: n = min(n, len(data["ctx"]))
-        if data["hourly"] is not None: n = min(n, len(data["hourly"]))
-        if data["aux"]    is not None: n = min(n, len(data["aux"]))
+            if data[f"num_{W}"] is not None:
+                n = min(n, len(data[f"num_{W}"]))
+
+        if data["ctx"] is not None:
+            n = min(n, len(data["ctx"]))
+        if data["hourly"] is not None:
+            n = min(n, len(data["hourly"]))
+        if data["aux"] is not None:
+            n = min(n, len(data["aux"]))
+        if data["intraday_targets"] is not None:
+            n = min(n, len(data["intraday_targets"]))
+        if data["intraday_mask"] is not None:
+            n = min(n, len(data["intraday_mask"]))
+        if data["econ"] is not None:
+            n = min(n, len(data["econ"]))
+
         data["_n"] = n
         self._cache[ticker] = data
         return data
@@ -475,11 +627,14 @@ class LazyMultiScaleDatasetV3(TorchDataset):
     def __getitem__(self, idx):
         ticker, local_idx = self.records[idx]
         data = self._load(ticker)
-        n = data["_n"]; local_idx = min(local_idx, n - 1)
+        n = data["_n"]
+        local_idx = min(local_idx, n - 1)
 
         imgs = {W: torch.tensor(data[W][local_idx]).float() for W in SCALES}
-        nums = ({W: torch.tensor(data[f"num_{W}"][local_idx]).float() for W in SCALES}
-                if data[f"num_{SCALES[0]}"] is not None else None)
+        nums = (
+            {W: torch.tensor(data[f"num_{W}"][local_idx]).float() for W in SCALES}
+            if data[f"num_{SCALES[0]}"] is not None else None
+        )
         cls_y = int(data["cls"][local_idx])
 
         ohlc_raw = data["ohlc"][local_idx]
@@ -490,6 +645,7 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         for W in SCALES:
             if not torch.isfinite(imgs[W]).all():
                 imgs[W] = torch.nan_to_num(imgs[W], nan=0., posinf=0., neginf=0.)
+
         if nums is not None:
             for W in SCALES:
                 if not torch.isfinite(nums[W]).all():
@@ -498,7 +654,7 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         ctx_arr = data["ctx"]
         if ctx_arr is not None and len(ctx_arr) > 0:
             ctx_idx = min(local_idx, len(ctx_arr) - 1)
-            ctx     = torch.tensor(ctx_arr[ctx_idx]).float()
+            ctx = torch.tensor(ctx_arr[ctx_idx]).float()
             if not torch.isfinite(ctx).all():
                 ctx = torch.nan_to_num(ctx, nan=0., posinf=0., neginf=0.)
         else:
@@ -511,25 +667,39 @@ class LazyMultiScaleDatasetV3(TorchDataset):
         else:
             hourly = torch.zeros(N_INTRADAY_DAYS, N_HOURLY_CHANNELS, N_HOURS_PER_DAY)
 
-        # ── БАГ 1 FIX: aux читается корректно ──────────────────
         if data["aux"] is not None:
-            aux_raw = data["aux"][local_idx]   # shape: (3,) новый кэш
+            aux_raw = data["aux"][local_idx]
             aux_len = len(aux_raw)
 
-            vol_raw  = float(aux_raw[0]) if aux_len >= 1 else 0.0
+            vol_raw = float(aux_raw[0]) if aux_len >= 1 else 0.0
             skew_raw = float(aux_raw[1]) if aux_len >= 2 else 0.0
 
-            # БАГ FIX: убрали * 100.0 — vol теперь хранится как сырое std
-            # Нормализуем в разумный диапазон для модели: vol ~0.01-0.05
-            # clip в [0, 0.15] чтобы выбросы не ломали aux_head
             aux_y = torch.tensor([
-                float(np.clip(vol_raw,  0.0, 0.15)),   # realized vol (сырое std)
-                float(np.clip(skew_raw, -3., 3.)),      # realized skew
+                float(np.clip(vol_raw, 0.0, 0.15)),
+                float(np.clip(skew_raw, -3.0, 3.0)),
             ]).float()
         else:
             aux_y = torch.zeros(2)
 
-        return imgs, nums, cls_y, ohlc_y, ctx, hourly, aux_y
+        if data["intraday_targets"] is not None:
+            intraday_y = torch.tensor(data["intraday_targets"][local_idx]).float()
+            intraday_y = torch.nan_to_num(intraday_y, nan=0., posinf=0., neginf=0.)
+        else:
+            intraday_y = torch.zeros(N_INTRADAY_DAYS, N_HOURS_PER_DAY)
+
+        if data["intraday_mask"] is not None:
+            intraday_mask = torch.tensor(data["intraday_mask"][local_idx]).float()
+            intraday_mask = torch.nan_to_num(intraday_mask, nan=0., posinf=0., neginf=0.)
+        else:
+            intraday_mask = torch.zeros(N_INTRADAY_DAYS, N_HOURS_PER_DAY)
+
+        if data["econ"] is not None:
+            econ_y = torch.tensor(data["econ"][local_idx]).float()
+            econ_y = torch.nan_to_num(econ_y, nan=0., posinf=0., neginf=0.)
+        else:
+            econ_y = torch.zeros(ECON_N_COLS)
+
+        return imgs, nums, cls_y, ohlc_y, ctx, hourly, aux_y, intraday_y, intraday_mask, econ_y
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -704,12 +874,64 @@ def build_labels_residual(df: pd.DataFrame,
 
 def build_multiscale_dataset_v3(
     df, imoex=None, context=None, ticker: str = "unknown",
-    hourly_df: pd.DataFrame = None, force_rebuild: bool = False,
+    hourly_df: pd.DataFrame = None, force_rebuild: bool = False, use_hourly=True,
 ):
     from sklearn.preprocessing import RobustScaler
 
     df    = add_indicators(df.copy(), imoex).dropna()
     W_max = max(SCALES); F = CFG.future_bars
+    
+    min_rows_after_dropna = max(60, W_max + F + 1)
+    need_hourly = use_hourly
+
+    def _empty_result():
+        imgs = {
+            W: np.empty((0, N_RENDER_CHANNELS, 64), dtype=np.float32)
+            for W in SCALES
+        }
+        nums = {
+            W: np.empty((0, W, len(INDICATOR_COLS)), dtype=np.float32)
+            for W in SCALES
+        }
+        cls = np.empty((0,), dtype=np.int64)
+        ohlc = np.empty((0, F * 4), dtype=np.float32)
+
+        ctx_out = None
+        if context is not None and hasattr(context, "shape") and len(context.shape) == 2:
+            ctx_out = np.empty((0, context.shape[1]), dtype=np.float32)
+
+        hourly_out = None
+        intraday_targets_out = None
+        intraday_mask_out = None
+
+        if need_hourly:
+            hourly_out = np.empty(
+                (0, N_INTRADAY_DAYS, N_HOURLY_CHANNELS, N_HOURS_PER_DAY),
+                dtype=np.float32
+            )
+            intraday_targets_out = np.empty(
+                (0, N_INTRADAY_DAYS, N_HOURS_PER_DAY),
+                dtype=np.float32
+            )
+            intraday_mask_out = np.empty(
+                (0, N_INTRADAY_DAYS, N_HOURS_PER_DAY),
+                dtype=np.float32
+            )
+
+        aux = np.empty((0, 3), dtype=np.float32)
+        econ_out = np.empty((0, ECON_N_COLS), dtype=np.float32)
+
+        return (
+            imgs, nums, cls, ohlc, ctx_out, hourly_out, aux,
+            intraday_targets_out, intraday_mask_out, econ_out,
+        )
+
+    if df is None or df.empty or len(df) < min_rows_after_dropna:
+        print(
+            f"  [SKIP] {ticker}: too short after indicators/dropna "
+            f"(len={0 if df is None else len(df)}, need>={min_rows_after_dropna})"
+        )
+        return _empty_result()
 
     def _cache_channels_valid(ticker: str) -> bool:
         p = _img_path(ticker, SCALES[0])
@@ -721,46 +943,66 @@ def build_multiscale_dataset_v3(
         except Exception:
             return False
 
-    # БАГ 1 FIX: добавлена проверка _aux_cache_valid
+    need_hourly = hourly_df is not None
+
     cache_ok = (
-        _cache_channels_valid(ticker) and
-        all(os.path.exists(_img_path(ticker, W)) for W in SCALES) and
-        all(os.path.exists(_num_path(ticker, W)) for W in SCALES) and
-        os.path.exists(_cls_path(ticker)) and
-        os.path.exists(_ohlc_path(ticker)) and
-        os.path.exists(_hourly_path(ticker)) and
-        _aux_cache_valid(ticker)   # ← проверяет shape [N,3] и std > 0
+        _cache_channels_valid(ticker)
+        and all(os.path.exists(_img_path(ticker, W)) for W in SCALES)
+        and all(os.path.exists(_num_path(ticker, W)) for W in SCALES)
+        and os.path.exists(_cls_path(ticker))
+        and os.path.exists(_ohlc_path(ticker))
+        and _aux_cache_valid(ticker)
+        and _econ_cache_valid(ticker)   # Sprint 2
+        and (
+            (not need_hourly)
+            or (
+                os.path.exists(_hourly_path(ticker))
+                and os.path.exists(_intraday_targets_path(ticker))
+                and os.path.exists(_intraday_mask_path(ticker))
+            )
+        )
     )
 
     if cache_ok and not force_rebuild:
-        print(f"  Кэш v3.4.2 найден для {ticker}")
-        imgs   = {W: np.load(_img_path(ticker, W)) for W in SCALES}
-        nums   = {W: np.load(_num_path(ticker, W)) for W in SCALES}
-        cls    = np.load(_cls_path(ticker))
-        ohlc   = np.load(_ohlc_path(ticker))
-        hourly = (np.load(_hourly_path(ticker))
-                  if os.path.exists(_hourly_path(ticker)) else None)
-        aux    = np.load(_aux_path(ticker))
+        print(f" Кэш {CACHE_VERSION} найден для {ticker}")
+        imgs = {W: np.load(_img_path(ticker, W)) for W in SCALES}
+        nums = {W: np.load(_num_path(ticker, W)) for W in SCALES}
+        cls = np.load(_cls_path(ticker))
+        ohlc = np.load(_ohlc_path(ticker))
+        hourly = np.load(_hourly_path(ticker)) if os.path.exists(_hourly_path(ticker)) else None
+        aux = np.load(_aux_path(ticker))
+        econ = np.load(_econ_path(ticker))    # Sprint 2
+        intraday_targets = (
+            np.load(_intraday_targets_path(ticker))
+            if os.path.exists(_intraday_targets_path(ticker)) else None
+        )
+        intraday_mask = (
+            np.load(_intraday_mask_path(ticker))
+            if os.path.exists(_intraday_mask_path(ticker)) else None
+        )
 
-        # Лёгкая санация
         for W in SCALES:
             if imgs[W].ndim == 4:
                 imgs[W] = np.stack([_hwc_to_cw(imgs[W][i]) for i in range(len(imgs[W]))])
                 np.save(_img_path(ticker, W), imgs[W])
+
         nan_cnt = (~np.isfinite(ohlc)).sum()
         if nan_cnt > 0:
             ohlc = np.nan_to_num(ohlc, nan=0., posinf=0., neginf=0.)
             np.save(_ohlc_path(ticker), ohlc)
 
-        ctx_list = []
-        if context is not None:
-            for i in range(W_max, len(df) - F):
-                ctx_list.append(context[i])
-        ctx = np.array(ctx_list, dtype=np.float32) if ctx_list else None
-        return _align_arrays(imgs, nums, cls, ohlc, ctx, hourly, aux)
+        ctx = (
+            np.load(_ctx_path(ticker))
+            if os.path.exists(_ctx_path(ticker)) else None
+        )
+
+        return _align_arrays(
+            imgs, nums, cls, ohlc, ctx, hourly, aux,
+            intraday_targets, intraday_mask, econ,
+        )
 
     # ── Полное построение ─────────────────────────────────────────
-    print(f"  {ticker}: полное построение датасета v3.4.2...")
+    print(f"  {ticker}: полное построение датасета v3.5.0...")
 
     # build_labels_residual теперь возвращает atr_ratio (не extra)
     ohlc_all, cls_all, valid_all, atr_ratio_full = build_labels_residual(
@@ -819,11 +1061,34 @@ def build_multiscale_dataset_v3(
     cls  = np.array(y_cls_list,  dtype=np.int64)
     ohlc = np.array(y_ohlc_list, dtype=np.float32)
     ctx  = np.array(ctx_list, dtype=np.float32) if ctx_list else None
+    if len(cls) == 0:
+        print(f"  [SKIP] {ticker}: no valid samples after label filtering")
+        return _empty_result()
 
     hourly = None
+    intraday_targets = None
+    intraday_mask = None
+
     if hourly_df is not None and len(valid_daily_indices) > 0:
-        print(f"  {ticker}: рендер часовых свечей...")
+        print(f"  {ticker}: рендер hourly windows...")
         hourly = _build_hourly_windows(hourly_df, df, valid_daily_indices)
+        if not np.isfinite(hourly).all():
+            hourly = np.nan_to_num(hourly, nan=0., posinf=0., neginf=0.)
+
+        print(f"  {ticker}: рендер intraday targets...")
+        intraday_targets, intraday_mask = _build_intraday_targets_windows(
+            hourly_df, df, valid_daily_indices
+        )
+
+        if intraday_targets is not None and not np.isfinite(intraday_targets).all():
+            intraday_targets = np.nan_to_num(
+                intraday_targets, nan=0., posinf=0., neginf=0.
+            )
+
+        if intraday_mask is not None and not np.isfinite(intraday_mask).all():
+            intraday_mask = np.nan_to_num(
+                intraday_mask, nan=0., posinf=0., neginf=0.
+            ).astype(np.float32)
 
 
     LOOKBACK_VOL = 20   # баров истории для vol/skew
@@ -885,24 +1150,64 @@ def build_multiscale_dataset_v3(
           f"skew_mean={aux[:,1].mean():.4f} | "
           f"atr_mean={aux[:,2].mean():.4f} std={aux[:,2].std():.4f}")
 
-    result = _align_arrays(imgs, nums, cls, ohlc, ctx, hourly, aux)
-    imgs, nums, cls, ohlc, ctx, hourly, aux = result
+    # ── Sprint 2: экономические таргеты ────────────────────────────────────
+    econ_full = build_economic_targets(
+        df,
+        valid_mask=valid_all,
+        future_bars=CFG.future_bars,
+        commission=CFG.econ_commission,
+        slippage=CFG.econ_slippage,
+        spread=CFG.econ_spread,
+    )
+    econ = np.array(
+        [econ_full[idx] for idx in valid_daily_indices],
+        dtype=np.float32,
+    )
+    if not np.isfinite(econ).all():
+        econ = np.nan_to_num(econ, nan=0., posinf=0., neginf=0.)
+    assert econ.ndim == 2 and econ.shape[1] == ECON_N_COLS, \
+        f"[BUG] econ должен быть [N,{ECON_N_COLS}], получили {econ.shape}"
 
-    # Финальная проверка после align
+    print(f"  [ECON] {ticker}: shape={econ.shape} | "
+          f"future_ret={econ[:,0].mean():+.5f} | "
+          f"mfe_long={econ[:,1].mean():.5f} mae_long={econ[:,2].mean():.5f} | "
+          f"fill_long={econ[:,7].mean():.3f} fill_short={econ[:,8].mean():.3f} | "
+          f"net_edge_long={econ[:,9].mean():+.5f}")
+
+    result = _align_arrays(
+        imgs, nums, cls, ohlc, ctx, hourly, aux,
+        intraday_targets, intraday_mask, econ,
+    )
+    imgs, nums, cls, ohlc, ctx, hourly, aux, intraday_targets, intraday_mask, econ = result
+
     assert aux.shape[1] == 3, f"После _align_arrays aux.shape={aux.shape}"
+    assert econ.shape[1] == ECON_N_COLS, f"После _align_arrays econ.shape={econ.shape}"
 
     for W in SCALES:
         np.save(_img_path(ticker, W), imgs[W])
         np.save(_num_path(ticker, W), nums[W])
-    np.save(_cls_path(ticker),  cls)
+
+    np.save(_cls_path(ticker), cls)
     np.save(_ohlc_path(ticker), ohlc)
-    np.save(_aux_path(ticker),  aux)   # [N, 3] — гарантировано
+    np.save(_aux_path(ticker), aux)
+    np.save(_econ_path(ticker), econ)   # Sprint 2
+
+    if ctx is not None:
+        np.save(_ctx_path(ticker), ctx)
+
     if hourly is not None:
         np.save(_hourly_path(ticker), hourly)
+    if intraday_targets is not None:
+        np.save(_intraday_targets_path(ticker), intraday_targets)
+    if intraday_mask is not None:
+        np.save(_intraday_mask_path(ticker), intraday_mask)
 
-    print(f"  {ticker}: сохранено {len(cls)} сэмплов, aux={aux.shape} ✓")
-    return imgs, nums, cls, ohlc, ctx, hourly, aux
-
+    print(
+        f" {ticker}: сохранено {len(cls)} сэмплов, "
+        f"aux={aux.shape}, econ={econ.shape}, "
+        f"intraday_targets={None if intraday_targets is None else intraday_targets.shape} ✓"
+    )
+    return imgs, nums, cls, ohlc, ctx, hourly, aux, intraday_targets, intraday_mask, econ
 
 # ══════════════════════════════════════════════════════════════════
 # Полный датасет
@@ -919,27 +1224,25 @@ def _process_one_ticker_parallel(
     use_hourly: bool,
     force_rebuild: bool,
 ):
-    from api.routes.candles import get_client
+    from data.tinkoff_client import TinkoffDataClient
+    from config import config
+
+    # Свой клиент на воркер — без гонки на синглтоне
+    client = TinkoffDataClient(token=config.tinkoff.token)
 
     t_total0 = time.perf_counter()
-    client = get_client()
 
     figi = client.find_figi(ticker)
     if not figi:
         return {"ticker": ticker, "ok": False, "reason": "FIGI not found"}
 
-    with ThreadPoolExecutor(max_workers=2) as io_pool:
-        fut_daily = io_pool.submit(_timed_call, _load_daily_candles_chunked, client, figi)
-        fut_ctx_raw = io_pool.submit(_timed_call, load_context_series, ticker)
-        fut_hourly = None
-
-        (df, t_daily) = fut_daily.result()
-        (ctx_series, t_ctx_load) = fut_ctx_raw.result()
-
-        if use_hourly:
-            hourly_df, t_hourly = _timed_call(_load_hourly_candles, client, figi)
-        else:
-            hourly_df, t_hourly = None, 0.0
+    # Убираем inner ThreadPoolExecutor — sequential внутри воркера
+    df, t_daily = _timed_call(_load_daily_candles_chunked, client, figi)
+    ctx_series, t_ctx_load = _timed_call(load_context_series, ticker)
+    hourly_df, t_hourly = (
+        _timed_call(_load_hourly_candles, client, figi)
+        if use_hourly else (None, 0.0)
+    )
 
     if df is None or df.empty:
         return {"ticker": ticker, "ok": False, "reason": "empty daily"}
@@ -957,7 +1260,8 @@ def _process_one_ticker_parallel(
     t_ctx_build = time.perf_counter() - t_ctx_build0
 
     t_build0 = time.perf_counter()
-    imgs, nums, cls, ohlc, ctx, hourly, aux = build_multiscale_dataset_v3(
+    (imgs, nums, cls, ohlc, ctx, hourly, aux,
+     intraday_targets, intraday_mask, econ) = build_multiscale_dataset_v3(
         df,
         imoex,
         ctx_feats,
@@ -1007,7 +1311,23 @@ def build_full_multiscale_dataset_v3(
     meta = _load_meta()
 
     def _ticker_fully_valid(t: str) -> bool:
-        return ticker_cache_valid(t, meta) and _aux_cache_valid(t)
+        base_ok = (
+            ticker_cache_valid(t, meta)
+            and _aux_cache_valid(t)
+            and _econ_cache_valid(t)
+        )
+
+        if not base_ok:
+            return False
+
+        if not use_hourly:
+            return True
+
+        return (
+            os.path.exists(_hourly_path(t))
+            and os.path.exists(_intraday_targets_path(t))
+            and os.path.exists(_intraday_mask_path(t))
+        )
 
     tickers_to_use = (
         CFG.tickers if ticker_filter is None
@@ -1022,7 +1342,7 @@ def build_full_multiscale_dataset_v3(
         print("  Все тикеры в кэше. probe-проверка актуальности...")
         if probe_freshness(client, tickers_to_use, meta):
             print("  ✓ Кэш актуален (aux v3.4.2)")
-            return _load_all_from_cache(meta, use_hourly=use_hourly)
+            return _load_all_from_cache(meta, use_hourly=use_hourly, tickers=tickers_to_use)
         print("  Кэш устарел — обновляем изменившиеся тикеры")
 
     records = []
@@ -1118,19 +1438,31 @@ def build_full_multiscale_dataset_v3(
     return dataset, y_all, ctx_dim, ticker_lengths
 
 
-def _load_all_from_cache(meta: dict, use_hourly: bool = True):
-    records = []; all_cls = []; ctx_dim = None; ticker_lengths = []
-    for ticker in CFG.tickers:
+def _load_all_from_cache(meta: dict, use_hourly: bool = True, tickers=None):
+    records = []
+    all_cls = []
+    ctx_dim = None
+    ticker_lengths = []
+
+    tickers = CFG.tickers if tickers is None else tickers
+
+    for ticker in tickers:
         cp = _cls_path(ticker)
-        if not os.path.exists(cp): continue
-        cls = np.load(cp, mmap_mode="r"); n = len(cls)
-        for local_idx in range(n): records.append((ticker, local_idx))
-        all_cls.append(cls); ticker_lengths.append((ticker, n))
+        if not os.path.exists(cp):
+            continue
+        cls = np.load(cp, mmap_mode="r")
+        n = len(cls)
+        for local_idx in range(n):
+            records.append((ticker, local_idx))
+        all_cls.append(cls)
+        ticker_lengths.append((ticker, n))
+
         ctx_p = _ctx_path(ticker)
         if os.path.exists(ctx_p) and ctx_dim is None:
             ctx_dim = np.load(ctx_p, mmap_mode="r").shape[1]
+
     ctx_dim = ctx_dim or 0
-    y_all   = np.concatenate(all_cls)
+    y_all = np.concatenate(all_cls)
     dataset = LazyMultiScaleDatasetV3(records, ctx_dim, use_hourly=use_hourly)
     print(f"  ✓ Кэш: {len(records)} сэмплов, {len(ticker_lengths)} тикеров")
     return dataset, y_all, ctx_dim, ticker_lengths

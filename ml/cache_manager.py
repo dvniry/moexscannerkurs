@@ -11,6 +11,11 @@ CACHE_META_PATH = "ml/cache_v3/_meta.json"
 PROBE_TICKERS   = 5          # сколько тикеров проверяем для freshness
 PROBE_CANDLES   = 10         # сколько последних свечей сравниваем
 
+# Sprint 2: версия эконом-таргетов. При изменении формулы build_economic_targets
+# или future_bars — bump эту константу, кэш econ_*.npy будет перестроен,
+# а тяжёлые hourly_*/imgs_*/nums_* останутся.
+ECON_VERSION = "v1"
+
 
 def _load_meta() -> dict:
     """Загружает метаданные кэша."""
@@ -46,18 +51,19 @@ def _last_trading_date() -> str:
 
 def ticker_cache_valid(ticker: str, meta: dict) -> bool:
     """Проверяет достаточность кэша для тикера по метаданным.
-    
+
     Не делает никаких API-запросов — только проверяет файлы + meta.
     """
     from ml.config import SCALES
-    from ml.dataset_v3 import _img_path, _num_path, _cls_path, _ohlc_path
+    from ml.dataset_v3 import _img_path, _num_path, _cls_path, _ohlc_path, _econ_path
 
     # 1. Все файлы кэша существуют?
     files_ok = (
         all(os.path.exists(_img_path(ticker, W)) for W in SCALES) and
         all(os.path.exists(_num_path(ticker, W)) for W in SCALES) and
         os.path.exists(_cls_path(ticker)) and
-        os.path.exists(_ohlc_path(ticker))
+        os.path.exists(_ohlc_path(ticker)) and
+        os.path.exists(_econ_path(ticker))    # Sprint 2
     )
     if not files_ok:
         return False
@@ -75,6 +81,10 @@ def ticker_cache_valid(ticker: str, meta: dict) -> bool:
     # 3. Количество сэмплов разумно?
     cached_n = t_meta.get("n_samples", 0)
     if cached_n < 100:
+        return False
+
+    # 4. Sprint 2: версия эконом-таргетов совпадает с текущей?
+    if t_meta.get("econ_version") != ECON_VERSION:
         return False
 
     return True
@@ -154,4 +164,5 @@ def update_meta(ticker: str, df: pd.DataFrame, n_samples: int,
         "n_candles":       len(df),
         "downloaded_at":   datetime.now().isoformat(),
         "interval":        "1d",
+        "econ_version":    ECON_VERSION,
     }

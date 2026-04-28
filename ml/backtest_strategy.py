@@ -261,6 +261,127 @@ def simulate_strategy(
 
 
 # ────────────────────────────────────────────────────────────
+# Sprint 2: симуляция на основе DecisionLayer
+# ────────────────────────────────────────────────────────────
+
+def simulate_decision_strategy(
+    decision_signal:  np.ndarray,    # [N] 0=BUY, 1=HOLD, 2=SELL
+    decision_conf:    np.ndarray,    # [N] confidence (used for sizing)
+    mfe_mae_pred:     np.ndarray,    # [N, 4] mfe_l, mae_l, mfe_s, mae_s (доли)
+    ohlc_true_pct:    np.ndarray,    # [N, 4] real ΔO ΔH ΔL ΔC (доли)
+    y_true:           np.ndarray,    # [N] для exit диагностики
+    fee:              float = 0.001,
+    max_position_pct: float = 0.02,
+    use_predicted_tp_sl: bool = True,
+):
+    """Decision-aware backtest.
+
+    Решение от DecisionLayer (BUY/HOLD/SELL). Размер позиции
+    масштабируется по confidence (clip[0,1]). Для long-входа TP=pred_mfe_long,
+    SL=-pred_mae_long; иначе exit на close. Симметрично для short.
+    """
+    trades = []
+    n_long_signals = n_long_filled = 0
+    n_short_signals = n_short_filled = 0
+
+    for t in range(len(decision_signal)):
+        sig = int(decision_signal[t])
+        if sig == 1:   # HOLD
+            continue
+
+        conf = float(np.clip(decision_conf[t], 0.0, 1.0))
+        position_size = max_position_pct * max(conf, 1e-3)
+
+        real_H = float(ohlc_true_pct[t, 1])
+        real_L = float(ohlc_true_pct[t, 2])
+        real_C = float(ohlc_true_pct[t, 3])
+
+        mfe_l = float(mfe_mae_pred[t, 0])
+        mae_l = float(mfe_mae_pred[t, 1])
+        mfe_s = float(mfe_mae_pred[t, 2])
+        mae_s = float(mfe_mae_pred[t, 3])
+
+        if sig == 0:   # BUY
+            n_long_signals += 1
+            n_long_filled  += 1   # market entry → всегда заполнено
+            entry_delta = 0.0
+            if use_predicted_tp_sl and mfe_l > 1e-4 and mae_l > 1e-4:
+                tp = entry_delta + mfe_l
+                sl = entry_delta - mae_l
+                tp_hit = real_H >= tp
+                sl_hit = real_L <= sl
+                if tp_hit and sl_hit:
+                    # консервативно — SL первый (sl_first)
+                    gross = sl - entry_delta
+                    exit_t = 'SL_worst'
+                elif tp_hit:
+                    gross = tp - entry_delta
+                    exit_t = 'TP'
+                elif sl_hit:
+                    gross = sl - entry_delta
+                    exit_t = 'SL'
+                else:
+                    gross = real_C - entry_delta
+                    exit_t = 'close'
+            else:
+                gross = real_C - entry_delta
+                exit_t = 'close'
+
+        elif sig == 2:   # SELL
+            n_short_signals += 1
+            n_short_filled  += 1
+            entry_delta = 0.0
+            if use_predicted_tp_sl and mfe_s > 1e-4 and mae_s > 1e-4:
+                tp = entry_delta - mfe_s
+                sl = entry_delta + mae_s
+                tp_hit = real_L <= tp
+                sl_hit = real_H >= sl
+                if tp_hit and sl_hit:
+                    gross = entry_delta - sl
+                    exit_t = 'SL_worst'
+                elif tp_hit:
+                    gross = entry_delta - tp
+                    exit_t = 'TP'
+                elif sl_hit:
+                    gross = entry_delta - sl
+                    exit_t = 'SL'
+                else:
+                    gross = entry_delta - real_C
+                    exit_t = 'close'
+            else:
+                gross = entry_delta - real_C
+                exit_t = 'close'
+        else:
+            continue
+
+        net_pnl_pct = gross - 2 * fee
+        pnl_capital = net_pnl_pct * position_size
+        if abs(pnl_capital) > 0.05:
+            continue
+
+        trades.append({
+            't': int(t),
+            'direction':   'LONG' if sig == 0 else 'SHORT',
+            'signal':      conf,
+            'size':        float(position_size),
+            'entry_delta': 0.0,
+            'gross_pnl':   float(gross),
+            'net_pnl_pct': float(net_pnl_pct),
+            'pnl_capital': float(pnl_capital),
+            'exit':        exit_t,
+            'true_cls':    int(y_true[t]),
+        })
+
+    diag = {
+        'long_fill_rate':  n_long_filled  / max(n_long_signals, 1),
+        'short_fill_rate': n_short_filled / max(n_short_signals, 1),
+        'n_signals_long':  n_long_signals,
+        'n_signals_short': n_short_signals,
+    }
+    return trades, diag
+
+
+# ────────────────────────────────────────────────────────────
 # Анализ
 # ────────────────────────────────────────────────────────────
 
@@ -342,6 +463,17 @@ def main():
     y_true    = data['y_test']
     atr_ratio = data['atr_ratio'] if 'atr_ratio' in data else np.full(len(p_dir), 0.018)
 
+    # Sprint 2: decision-aware ключи (опционально)
+    has_decision = 'decision_signal' in data.files
+    if has_decision:
+        decision_signal = data['decision_signal']
+        decision_conf   = data['decision_confidence']
+        mfe_mae_pred    = data['mfe_mae_pred']
+        print(f'  ✓ Sprint 2: decision_signal присутствует '
+              f'(BUY={int((decision_signal==0).sum())} '
+              f'HOLD={int((decision_signal==1).sum())} '
+              f'SELL={int((decision_signal==2).sum())})')
+
     total_samples = len(p_dir)
 
     if args.days is not None:
@@ -386,6 +518,21 @@ def main():
             trades, label=f'{name} [{mode}]',
             trading_days=trading_days, total_samples=total_samples, diag=diag)
         all_trades[name] = trades
+
+    # ── Sprint 2: decision-aware стратегия ─────────────────────────────
+    if has_decision:
+        print(f'\n{"═"*70}\n  E. DECISION LAYER (Sprint 2)\n{"═"*70}')
+        dec_trades, dec_diag = simulate_decision_strategy(
+            decision_signal=decision_signal,
+            decision_conf=decision_conf,
+            mfe_mae_pred=mfe_mae_pred,
+            ohlc_true_pct=ohlc_true_pct,
+            y_true=y_true,
+        )
+        stats['E_decision_layer'] = analyze_trades(
+            dec_trades, label='E_decision_layer',
+            trading_days=trading_days, total_samples=total_samples, diag=dec_diag)
+        all_trades['E_decision_layer'] = dec_trades
 
     # Equity plot
     plt.figure(figsize=(14, 7))

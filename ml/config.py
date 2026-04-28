@@ -38,7 +38,6 @@ SECTOR_CONTEXT = {
     "VTBR": ["IMOEX", "RVI"],
     "T":    ["IMOEX", "RVI"],
     "CBOM": ["IMOEX", "RVI"],
-    "SVCB": ["IMOEX", "RVI"],
     "BSPB": ["IMOEX", "RVI"],
     "MOEX": ["IMOEX", "RVI"],
     # ── Технологии и телеком ─────────────────────────────────────
@@ -46,7 +45,6 @@ SECTOR_CONTEXT = {
     "YDEX": ["IMOEX", "RVI"],
     "RTKM": ["IMOEX", "RVI"],
     "VKCO": ["IMOEX", "RVI"],
-    "POSI": ["IMOEX", "RVI"],
     "HEAD": ["IMOEX", "RVI"],
     # ── Ритейл и потребсектор ────────────────────────────────────
     "MGNT": ["IMOEX", "RVI"],
@@ -73,13 +71,18 @@ class MLConfig:
     tickers: list = None
     interval: str = "1d"
     days_back: int = 3650
-    future_bars: int = 1
+    future_bars: int = 5            # Sprint 2: было 1, поднято для MFE/MAE/edge
     profit_thr: float = 0.010
     loss_thr: float = -0.010
 
     # ── Комиссия брокера ────────────────────────────────────────
     broker_commission: float = 0.0005
     min_net_profit: float = 0.0030
+
+    # ── Sprint 2: торговые издержки для cost-aware обучения ────
+    econ_commission: float = 0.0005   # = broker_commission, одна сторона
+    econ_slippage:   float = 0.0003
+    econ_spread:     float = 0.0002
 
     # ── Image encoder ───────────────────────────────────────────
     img_size: int = 64
@@ -119,16 +122,16 @@ class MLConfig:
     def __post_init__(self):
         if self.tickers is None:
             self.tickers = [
-                # ── Банки и финансы (7) ──────────────────────────────
-                "SBER", "VTBR", "T", "CBOM", "SVCB", "BSPB", "MOEX",
+                # ── Банки и финансы (6) ──────────────────────────────
+                "SBER", "VTBR", "T", "CBOM", "BSPB", "MOEX",
                 # ── Нефть и газ (9) ───────────────────────────────────
                 "GAZP", "LKOH", "NVTK", "ROSN", "TATN", "SNGS",
                 "AFLT", "TRNFP", "BANEP",
                 # ── Металлы и горнодобыча (9) ─────────────────────────
                 "GMKN", "MAGN", "NLMK", "CHMF", "RUAL",
                 "PLZL", "ALRS", "UGLD", "SELG",
-                # ── Технологии и телеком (6) ──────────────────────────
-                "YDEX", "MTSS", "RTKM", "VKCO", "POSI", "HEAD",
+                # ── Технологии и телеком (5) ──────────────────────────
+                "YDEX", "MTSS", "RTKM", "VKCO", "HEAD",
                 # ── Транспорт ─────────────────────────────────────────
                 "FLOT",
                 # ── Ритейл и потребсектор (5) ─────────────────────────

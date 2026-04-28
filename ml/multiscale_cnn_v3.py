@@ -20,6 +20,7 @@ try:
 except ImportError:
     from config import CFG, SCALES
 
+from ml.hourly_encoder import N_HOURS_PER_DAY, N_HOURLY_CHANNELS, N_INTRADAY_DAYS
 try:
     from xlstm import (xLSTMBlockStack, xLSTMBlockStackConfig, mLSTMBlockConfig)
     HAS_XLSTM = True
@@ -250,9 +251,21 @@ class VariableSelectionNetwork(nn.Module):
 # ────────────────────────────────────────────────────────────
 
 class HourlyEncoder(nn.Module):
-    def __init__(self, n_feats=9, n_hours=11, n_days=5, out_dim=TRUNK_OUT):
+    def __init__(self, n_feats=N_HOURLY_CHANNELS, n_hours=N_HOURS_PER_DAY, n_days=N_INTRADAY_DAYS, out_dim=TRUNK_OUT):
         super().__init__()
-        self.net = nn.Sequential(
+        self.n_days = n_days
+        self.n_hours = n_hours
+        self.n_feats = n_feats
+
+        self.slot_net = nn.Sequential(
+            nn.Linear(n_feats, 32),
+            nn.GELU(),
+            nn.Linear(32, 16),
+            nn.GELU(),
+        )
+        self.slot_head = nn.Linear(16, 1)
+
+        self.global_net = nn.Sequential(
             nn.Flatten(1),
             nn.Linear(n_days * n_hours * n_feats, 256),
             nn.GELU(),
@@ -262,7 +275,31 @@ class HourlyEncoder(nn.Module):
         )
 
     def forward(self, x):
-        return self.net(x.nan_to_num(nan=0., posinf=5., neginf=-5.))
+            x = x.nan_to_num(nan=0., posinf=5., neginf=-5.).float()
+
+            if x.ndim != 4:
+                raise ValueError(f"HourlyEncoder: expected 4D input, got {tuple(x.shape)}")
+
+            # Приводим к канонической форме [B, D, C, H] для global_net
+            if x.shape[-2] == self.n_feats and x.shape[-1] == self.n_hours:
+                x_c_h = x                      # [B, D, C, H]
+            elif x.shape[-2] == self.n_hours and x.shape[-1] == self.n_feats:
+                x_c_h = x.permute(0, 1, 3, 2).contiguous()   # [B, D, C, H]
+            else:
+                raise ValueError(
+                    f"HourlyEncoder: bad shape {tuple(x.shape)}, "
+                    f"expected [..., {self.n_feats}, {self.n_hours}] or "
+                    f"[..., {self.n_hours}, {self.n_feats}]"
+                )
+
+            g = self.global_net(x_c_h)
+
+            # Для slot_net нужна форма [B, D, H, C]
+            slots = x_c_h.permute(0, 1, 3, 2).contiguous()
+            sh = self.slot_net(slots)
+            intraday = self.slot_head(sh).squeeze(-1)
+
+            return g, intraday
 
 
 class CalibratedClsHead(nn.Module):
@@ -377,6 +414,142 @@ class AuxLoss(nn.Module):
         return vol_loss + skew_loss
 
 
+class EconomicHeads(nn.Module):
+    """Sprint 2: cost-aware головы для DecisionLayer.
+
+    Выходы (dict):
+      mfe_mae    [B, 4]: [mfe_long, mae_long, mfe_short, mae_short] >= 0 (Softplus β=1)
+      fill_logit [B, 2]: [fill_long, fill_short] — logits, sigmoid в loss
+      edge_pred  [B, 2]: [net_edge_long, net_edge_short] — scalar regression
+
+    Размерности голов малые (32-64) — основная работа делается в trunk (TRUNK_OUT=128).
+
+    Инициализация: финальные слои с gain=0.01 → старт почти от 0 (Softplus(0)≈0.69 но
+    через линейную проекцию 64→4 с очень малыми весами: выход ≈ 0). Промежуточные слои
+    стандартный gain=0.5. Это критично: с gain=0.1 + clamp активации застревали
+    на границах clamp и градиенты обнулялись.
+    """
+    def __init__(self, in_dim: int = TRUNK_OUT, dropout: float = 0.2):
+        super().__init__()
+        self.mfe_head = nn.Sequential(
+            nn.Linear(in_dim, 64), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(64, 4),
+        )
+        self.fill_head = nn.Sequential(
+            nn.Linear(in_dim, 32), nn.GELU(),
+            nn.Linear(32, 2),
+        )
+        self.edge_head = nn.Sequential(
+            nn.Linear(in_dim, 64), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(64, 2),
+        )
+        self._init_heads()
+
+    def _init_heads(self):
+        for module in (self.mfe_head, self.fill_head, self.edge_head):
+            linears = [m for m in module if isinstance(m, nn.Linear)]
+            # Финальный слой — очень мягкая init: старт около 0
+            nn.init.xavier_uniform_(linears[-1].weight, gain=0.01)
+            nn.init.zeros_(linears[-1].bias)
+            # Промежуточный — стандартная init
+            nn.init.xavier_uniform_(linears[0].weight, gain=0.5)
+            nn.init.zeros_(linears[0].bias)
+        # mfe_head: разные биасы для mfe (cols 0,2) и mae (cols 1,3).
+        # mfe_long/short → bias=-3.5: softplus≈0.030 (ожидаемый upside)
+        # mae_long/short → bias=-4.5: softplus≈0.011 (ожидаемый drawdown)
+        # rr_init = 0.030 / 0.011 ≈ 2.7 > min_rr=0.8 с первого батча,
+        # поэтому модель сразу генерирует BUY и SELL, а не только HOLD.
+        # После схождения loss подтянет выходы к реальным таргетам.
+        mfe_last = [m for m in self.mfe_head if isinstance(m, nn.Linear)][-1]
+        with torch.no_grad():
+            mfe_last.bias[0] = -3.5   # mfe_long
+            mfe_last.bias[1] = -4.5   # mae_long
+            mfe_last.bias[2] = -3.5   # mfe_short
+            mfe_last.bias[3] = -4.5   # mae_short
+        # edge_head: стартуем на уровне cost=0.002, чтобы er_init ≈ 1.0 (break-even).
+        # Предотвращает HOLD=100% при er_init≈0 (gain=0.01 без bias даёт edge≈0).
+        edge_last = [m for m in self.edge_head if isinstance(m, nn.Linear)][-1]
+        nn.init.constant_(edge_last.bias, 0.002)
+
+    def forward(self, x: torch.Tensor) -> dict:
+        # Softplus β=1 (стандарт): без мёртвой зоны при отрицательных входах
+        mfe_raw = self.mfe_head(x)
+        mfe = F.softplus(mfe_raw, beta=1.0).clamp(0., 0.30)
+        # fill — clamp для численной стабильности sigmoid
+        fill = self.fill_head(x).clamp(-15., 15.)
+        # edge — широкий safety-clamp: target в диапазоне [-0.05, +0.05],
+        # широкий [-0.50, 0.50] не давит на градиент
+        edge = self.edge_head(x).clamp(-0.50, 0.50)
+        return {"mfe_mae": mfe, "fill_logit": fill, "edge_pred": edge}
+
+
+class EconomicLoss(nn.Module):
+    """Sprint 2: cost-aware loss для EconomicHeads.
+
+    Компоненты:
+      l_mfe     — Huber по MFE/MAE long+short, beta=0.01 (масштаб ~1% движения)
+      l_fill    — BCE-with-logits по [fill_long, fill_short]
+      l_edge    — Huber по net_edge long+short, beta=0.001 (масштаб ~0.1%)
+      l_penalty — F.relu(cost - edge_long).mean() + F.relu(cost - edge_short).mean()
+                  Штрафует модель за предсказание edge меньше cost: учит осторожности.
+
+    econ_target колонки (см. ECON_COL_NAMES в labels_ohlc):
+      0:future_ret  1:mfe_long   2:mae_long   3:mfe_short  4:mae_short
+      5:rr_long     6:rr_short   7:fill_long  8:fill_short
+      9:net_edge_long  10:net_edge_short
+    """
+    def __init__(self, cost_roundtrip: float = 0.002,
+                 w_mfe: float = 0.5, w_fill: float = 0.3,
+                 w_edge: float = 0.5, w_penalty: float = 0.05):
+        # w_penalty снижен с 0.2 → 0.05: при 0.2 penalty доминировал и пушил
+        # edge_pred к верхней границе clamp (наблюдалось edge=0.2 mean, std=0).
+        # Penalty всё ещё работает как мягкая регуляризация осторожности.
+        super().__init__()
+        self.cost_roundtrip = float(cost_roundtrip)
+        self.w_mfe = w_mfe
+        self.w_fill = w_fill
+        self.w_edge = w_edge
+        self.w_penalty = w_penalty
+
+    def forward(self, econ_pred: dict, econ_target: torch.Tensor):
+        # Таргеты
+        mfe_l_t = econ_target[:, 1]
+        mae_l_t = econ_target[:, 2]
+        mfe_s_t = econ_target[:, 3]
+        mae_s_t = econ_target[:, 4]
+        fill_l_t = econ_target[:, 7]
+        fill_s_t = econ_target[:, 8]
+        edge_l_t = econ_target[:, 9]
+        edge_s_t = econ_target[:, 10]
+
+        mfe_mae_target = torch.stack([mfe_l_t, mae_l_t, mfe_s_t, mae_s_t], dim=1)
+        fill_target    = torch.stack([fill_l_t, fill_s_t], dim=1)
+        edge_target    = torch.stack([edge_l_t, edge_s_t], dim=1)
+
+        l_mfe  = F.smooth_l1_loss(econ_pred["mfe_mae"],   mfe_mae_target, beta=0.01)
+        l_fill = F.binary_cross_entropy_with_logits(econ_pred["fill_logit"], fill_target)
+        l_edge = F.smooth_l1_loss(econ_pred["edge_pred"], edge_target,    beta=0.001)
+
+        edge_l = econ_pred["edge_pred"][:, 0]
+        edge_s = econ_pred["edge_pred"][:, 1]
+        # Penalty ограничен сверху одним cost: при edge << 0 не убегает в +∞
+        # и не пушит edge_pred в clamp границы.
+        l_penalty = (F.relu(self.cost_roundtrip - edge_l).clamp_max(self.cost_roundtrip).mean()
+                     + F.relu(self.cost_roundtrip - edge_s).clamp_max(self.cost_roundtrip).mean())
+
+        total = (self.w_mfe     * l_mfe
+                 + self.w_fill  * l_fill
+                 + self.w_edge  * l_edge
+                 + self.w_penalty * l_penalty)
+
+        return total, {
+            "mfe":     l_mfe.item(),
+            "fill":    l_fill.item(),
+            "edge":    l_edge.item(),
+            "penalty": l_penalty.item(),
+        }
+
+
 class DirectionHead(nn.Module):
     def __init__(self, in_dim=TRUNK_OUT, dropout=0.2):
         super().__init__()
@@ -444,6 +617,7 @@ class MultiScaleHybridV3(nn.Module):
         self.ohlc_head = OHLCHeadV2(TRUNK_OUT, future_bars=future_bars)
         self.aux_head  = AuxHead(TRUNK_OUT)
         self.dir_head  = DirectionHead(TRUNK_OUT)
+        self.econ_heads = EconomicHeads(TRUNK_OUT)   # Sprint 2
 
         # Алиас для совместимости с trainer (backbone_ids)
         self.backbone = self.backbones[str(min(SCALES))]
@@ -451,6 +625,7 @@ class MultiScaleHybridV3(nn.Module):
         self._init_weights()
         self.dir_head._init_head()
         self.ohlc_head._init_head()
+        self.econ_heads._init_heads()   # Sprint 2: после _init_weights — иначе bias=-4 обнулится
 
     def _init_weights(self):
         for m in self.modules():
@@ -466,37 +641,38 @@ class MultiScaleHybridV3(nn.Module):
 
     def forward(self, imgs, nums, ctx=None, hourly=None):
         feats = []
-
         for W in SCALES:
-            feats.append(self.backbones[str(W)](imgs[W].float()))
+            feats.append(self.backbones[str(W)](imgs[W]))
 
         long_W = max(SCALES)
         if nums is not None and long_W in nums:
-            x_long = nums[long_W].float()
-            x_long = self.wavelet(x_long)
+            x_long = self.wavelet(nums[long_W].float())
             feats.append(self.seq_branch(x_long))
         else:
-            feats.append(torch.zeros(
-                imgs[min(SCALES)].shape[0], TRUNK_OUT,
-                device=imgs[min(SCALES)].device))
+            feats.append(torch.zeros(imgs[min(SCALES)].shape[0], TRUNK_OUT, device=imgs[min(SCALES)].device))
 
         for W in SCALES:
-            if W < long_W and nums is not None and W in nums:
+            if W != long_W and nums is not None and W in nums:
                 feats.append(self.num_stats[str(W)](nums[W].float()))
 
+        intraday_pred = None
         if self.use_hourly and hourly is not None:
-            feats.append(self.hourly_enc(hourly.float()))
+            hourly_feat, intraday_pred = self.hourly_enc(hourly.float())
+            feats.append(hourly_feat)
+
         if self.ctx_dim > 0 and ctx is not None:
             feats.append(self.ctx_proj(ctx.float()))
 
         feats = [f.nan_to_num(nan=0., posinf=10., neginf=-10.) for f in feats]
-        h     = self.vsn(feats)
+        h = self.vsn(feats)
 
-        logits    = self.cls_head(h)
-        ohlc      = self.ohlc_head(h)
-        aux       = self.aux_head(h)
+        logits = self.cls_head(h)
+        ohlc = self.ohlc_head(h)
+        aux = self.aux_head(h)
         dir_logit = self.dir_head(h)
-        return logits, ohlc, aux, dir_logit
+        econ = self.econ_heads(h)   # Sprint 2: dict с mfe_mae/fill_logit/edge_pred
+
+        return logits, ohlc, aux, dir_logit, intraday_pred, econ
 
 
 # ────────────────────────────────────────────────────────────
@@ -652,7 +828,7 @@ def evaluate_multiscale_v3(model, te_ds, y_test, ctx_dim,
     import json
 
     device = next(model.parameters()).device
-    loader = _make_loader_v3(te_ds, batch_size=256, shuffle=False, num_workers=2)
+    loader = _make_loader_v3(te_ds, batch_size=1024, shuffle=False, num_workers=2)
     model.eval()
 
     all_preds = []; all_trues = []
@@ -669,8 +845,10 @@ def evaluate_multiscale_v3(model, te_ds, y_test, ctx_dim,
             nums  = ({W: num_dict[W].to(device) for W in SCALES}
                      if num_dict is not None else None)
             out = model(imgs, nums, ctx_t, hourly=ht)
-            if len(out) == 4:
-                lo, op, _, dir_l = out
+            n_out = len(out) if isinstance(out, (tuple, list)) else 1
+            if n_out >= 4:
+                lo, op = out[0], out[1]
+                dir_l = out[3]
                 all_dir_prob.append(torch.sigmoid(dir_l).cpu().numpy())
             else:
                 lo, op, _ = out
