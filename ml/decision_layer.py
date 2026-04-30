@@ -61,21 +61,23 @@ class DecisionLayer:
     def __init__(
         self,
         costs: Optional[TradingCosts] = None,
-        min_edge_ratio: float = 2.0,   # edge >= 2× cost — реальный буфер над костами
-        min_dir_prob:   float = 0.62,  # топ-10% уверенных предсказаний dir_head
-        min_fill_prob:  float = 0.40,
-        min_rr:         float = 1.2,   # mfe > mae — асимметрия в нашу пользу
+        min_edge_ratio:      float = 4.0,   # было 2.0; повышено т.к. edge_pred ~0, нужна высокая уверенность
+        min_dir_prob:        float = 0.70,  # BUY: dir_prob >= 0.70
+        min_sell_dir_prob:   float = 0.85,  # SELL: dir_prob <= 0.15 (ужесточено: модель имеет DOWN-bias, ~67% DOWN)
+        min_fill_prob:       float = 0.40,
+        min_rr:              float = 1.2,
     ):
         self.costs = costs or TradingCosts()
-        self.min_edge_ratio = float(min_edge_ratio)
-        self.min_dir_prob   = float(min_dir_prob)
-        self.min_fill_prob  = float(min_fill_prob)
-        self.min_rr         = float(min_rr)
+        self.min_edge_ratio    = float(min_edge_ratio)
+        self.min_dir_prob      = float(min_dir_prob)
+        self.min_sell_dir_prob = float(min_sell_dir_prob)
+        self.min_fill_prob     = float(min_fill_prob)
+        self.min_rr            = float(min_rr)
 
     @torch.no_grad()
     def decide(self, dir_logit: torch.Tensor, econ: dict) -> dict:
         """
-        dir_logit: [B] — sigmoid выход dir_head (logit)
+        dir_logit: [B] — logit из dir_head (перед sigmoid)
         econ: dict из EconomicHeads.forward с ключами:
             mfe_mae    [B, 4]  (mfe_l, mae_l, mfe_s, mae_s)
             fill_logit [B, 2]  (fill_l, fill_s) — logits
@@ -110,7 +112,7 @@ class DecisionLayer:
             & (er_l    >= self.min_edge_ratio)
         )
         short_ok = (
-            ((1.0 - dir_prob) >= self.min_dir_prob)
+            ((1.0 - dir_prob) >= self.min_sell_dir_prob)
             & (fill_s         >= self.min_fill_prob)
             & (rr_s           >= self.min_rr)
             & (er_s           >= self.min_edge_ratio)

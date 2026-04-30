@@ -13,54 +13,70 @@ SCALES = [5, 10, 20, 30]
 
 SECTOR_CONTEXT = {
     # ── Нефть и газ ─────────────────────────────────────────────
-    "ROSN": ["IMOEX", "LCOc1"],
-    "LKOH": ["IMOEX", "LCOc1"],
-    "NVTK": ["IMOEX", "LCOc1"],
-    "TATN": ["IMOEX", "LCOc1"],
-    "SNGS": ["IMOEX", "LCOc1"],
-    "AFLT": ["IMOEX", "LCOc1"],
-    "GAZP": ["IMOEX", "LCOc1"],
-    "FLOT": ["IMOEX", "LCOc1"],
+    "ROSN":  ["IMOEX", "LCOc1"],
+    "LKOH":  ["IMOEX", "LCOc1"],
+    "NVTK":  ["IMOEX", "LCOc1"],
+    "TATN":  ["IMOEX", "LCOc1"],
+    "TATNP": ["IMOEX", "LCOc1"],
+    "SIBN":  ["IMOEX", "LCOc1"],
+    "SNGS":  ["IMOEX", "LCOc1"],
+    "AFLT":  ["IMOEX", "LCOc1"],
+    "GAZP":  ["IMOEX", "LCOc1"],
+    "FLOT":  ["IMOEX", "LCOc1"],
     "TRNFP": ["IMOEX", "LCOc1"],
     "BANEP": ["IMOEX", "LCOc1"],
     # ── Металлы и горнодобыча ────────────────────────────────────
-    "GMKN": ["IMOEX", "XAU"],
-    "MAGN": ["IMOEX", "LCOc1"],
-    "NLMK": ["IMOEX", "LCOc1"],
-    "CHMF": ["IMOEX", "LCOc1"],
-    "RUAL": ["IMOEX", "XAU"],
-    "PLZL": ["IMOEX", "XAU"],
-    "ALRS": ["IMOEX", "XAU"],
-    "UGLD": ["IMOEX", "XAU"],
-    "SELG": ["IMOEX", "XAU"],
+    "GMKN":  ["IMOEX", "XAU"],
+    "MAGN":  ["IMOEX", "LCOc1"],
+    "NLMK":  ["IMOEX", "LCOc1"],
+    "CHMF":  ["IMOEX", "LCOc1"],
+    "RUAL":  ["IMOEX", "XAU"],
+    "ENPG":  ["IMOEX", "XAU"],
+    "PLZL":  ["IMOEX", "XAU"],
+    "ALRS":  ["IMOEX", "XAU"],
+    "UGLD":  ["IMOEX", "XAU"],
+    "SELG":  ["IMOEX", "XAU"],
+    "MTLR":  ["IMOEX", "LCOc1"],
+    "RASP":  ["IMOEX", "LCOc1"],
+    "TRMK":  ["IMOEX", "LCOc1"],
     # ── Банки и финансы ──────────────────────────────────────────
-    "SBER": ["IMOEX", "RVI"],
-    "VTBR": ["IMOEX", "RVI"],
-    "T":    ["IMOEX", "RVI"],
-    "CBOM": ["IMOEX", "RVI"],
-    "BSPB": ["IMOEX", "RVI"],
-    "MOEX": ["IMOEX", "RVI"],
+    "SBER":  ["IMOEX", "RVI"],
+    "SBERP": ["IMOEX", "RVI"],
+    "VTBR":  ["IMOEX", "RVI"],
+    "T":     ["IMOEX", "RVI"],
+    "CBOM":  ["IMOEX", "RVI"],
+    "BSPB":  ["IMOEX", "RVI"],
+    "MOEX":  ["IMOEX", "RVI"],
     # ── Технологии и телеком ─────────────────────────────────────
-    "MTSS": ["IMOEX", "RVI"],
-    "YDEX": ["IMOEX", "RVI"],
-    "RTKM": ["IMOEX", "RVI"],
-    "VKCO": ["IMOEX", "RVI"],
-    "HEAD": ["IMOEX", "RVI"],
+    "MTSS":  ["IMOEX", "RVI"],
+    "YDEX":  ["IMOEX", "RVI"],
+    "RTKM":  ["IMOEX", "RVI"],
+    "VKCO":  ["IMOEX", "RVI"],
+    "HEAD":  ["IMOEX", "RVI"],
     # ── Ритейл и потребсектор ────────────────────────────────────
-    "MGNT": ["IMOEX", "RVI"],
-    "OZON": ["IMOEX", "RVI"],
-    "PHOR": ["IMOEX", "RVI"],
-    "AFKS": ["IMOEX", "RVI"],
-    "LENT": ["IMOEX", "RVI"],
-    # ── Прочее ───────────────────────────────────────────────────
-    "IRAO": ["IMOEX", "RVI"],
-    "PIKK": ["IMOEX", "RVI"],
-    "SMLT": ["IMOEX", "RVI"],
+    "MGNT":  ["IMOEX", "RVI"],
+    "OZON":  ["IMOEX", "RVI"],
+    "PHOR":  ["IMOEX", "RVI"],
+    "AFKS":  ["IMOEX", "RVI"],
+    "LENT":  ["IMOEX", "RVI"],
+    # ── Недвижимость ─────────────────────────────────────────────
+    "LSRG":  ["IMOEX", "RVI"],
+    # ── Прочее / холдинги ────────────────────────────────────────
+    "IRAO":  ["IMOEX", "RVI"],
+    "PIKK":  ["IMOEX", "RVI"],
+    "SMLT":  ["IMOEX", "RVI"],
+    # ── Транспорт ────────────────────────────────────────────────
+    "NMTP":  ["IMOEX", "LCOc1"],
+    "FESH":  ["IMOEX", "LCOc1"],
     # ── Энергетика ───────────────────────────────────────────────
-    "HYDR": ["IMOEX", "RVI"],
-    "FEES": ["IMOEX", "RVI"],
-    "MSNG": ["IMOEX", "RVI"],
-    "UPRO": ["IMOEX", "RVI"],
+    "HYDR":  ["IMOEX", "RVI"],
+    "FEES":  ["IMOEX", "RVI"],
+    "MSNG":  ["IMOEX", "RVI"],
+    "UPRO":  ["IMOEX", "RVI"],
+    "OGKB":  ["IMOEX", "RVI"],
+    # ── Химия и удобрения ────────────────────────────────────────
+    "NKNC":  ["IMOEX", "LCOc1"],
+    "KAZT":  ["IMOEX", "LCOc1"],
     # ── Fallback ─────────────────────────────────────────────────
     "__default__": ["IMOEX", "RVI"],
 }
@@ -122,24 +138,29 @@ class MLConfig:
     def __post_init__(self):
         if self.tickers is None:
             self.tickers = [
-                # ── Банки и финансы (6) ──────────────────────────────
-                "SBER", "VTBR", "T", "CBOM", "BSPB", "MOEX",
-                # ── Нефть и газ (9) ───────────────────────────────────
-                "GAZP", "LKOH", "NVTK", "ROSN", "TATN", "SNGS",
-                "AFLT", "TRNFP", "BANEP",
-                # ── Металлы и горнодобыча (9) ─────────────────────────
-                "GMKN", "MAGN", "NLMK", "CHMF", "RUAL",
-                "PLZL", "ALRS", "UGLD", "SELG",
+                # ── Банки и финансы (7) ──────────────────────────────
+                "SBER", "SBERP", "VTBR", "T", "CBOM", "BSPB", "MOEX",
+                # ── Нефть и газ (12) ──────────────────────────────────
+                "GAZP", "LKOH", "NVTK", "ROSN", "TATN", "TATNP",
+                "SIBN", "SNGS", "AFLT", "TRNFP", "BANEP", "FLOT",
+                # ── Металлы и горнодобыча (13) ────────────────────────
+                "GMKN", "MAGN", "NLMK", "CHMF", "RUAL", "ENPG",
+                "PLZL", "ALRS", "UGLD", "SELG", "MTLR", "RASP",
+                "TRMK",
                 # ── Технологии и телеком (5) ──────────────────────────
                 "YDEX", "MTSS", "RTKM", "VKCO", "HEAD",
-                # ── Транспорт ─────────────────────────────────────────
-                "FLOT",
                 # ── Ритейл и потребсектор (5) ─────────────────────────
                 "MGNT", "OZON", "PHOR", "LENT", "AFKS",
-                # ── Прочее: девелопмент / холдинги (3) ───────────────
-                "IRAO", "PIKK", "SMLT",
-                # ── Энергетика (4) ────────────────────────────────────
-                "HYDR", "FEES", "MSNG", "UPRO",
+                # ── Недвижимость (2) ──────────────────────────────────
+                "PIKK", "LSRG",
+                # ── Прочее / холдинги (2) ─────────────────────────────
+                "IRAO", "SMLT",
+                # ── Транспорт (2) ─────────────────────────────────────
+                "NMTP", "FESH",
+                # ── Энергетика (5) ────────────────────────────────────
+                "HYDR", "FEES", "MSNG", "UPRO", "OGKB",
+                # ── Химия и удобрения (2) ─────────────────────────────
+                "NKNC", "KAZT",
             ]
         if self.mlp_hidden is None:
             self.mlp_hidden = [128, 64, 32]

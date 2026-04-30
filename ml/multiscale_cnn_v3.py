@@ -1,13 +1,7 @@
-# ml/multiscale_cnn_v3.py
-"""MultiScale CNN Hybrid v3.19
+# ml/multiscale_cnn_v3.py  v3.21 (Sprint 1.5: Intraday Feedback Loop)
+# forward() + intraday_feats/intraday_mask; DayHourCrossAttention; extremes_head
+# backward-compat: intraday_feats=None -> works as v3.20
 
-Изменения v3.19:
-- [AUX FIX]  AuxLoss: нормировка vol на VOL_SCALE=0.02 → градиенты сравнимы
-- [AUX FIX]  MultiTaskLossV3: direction_weight=0.40 (было 0.80)
-             reg_loss_weight=0.20 (было 0.30), aux_loss_weight=0.10 (было 0.05)
-- [DIR FIX]  dir_loss: mask.sum() >= 4 для стабильного BCE
-- Все улучшения v3.17/v3.18 сохранены
-"""
 import math
 import torch
 import torch.nn as nn
@@ -21,6 +15,11 @@ except ImportError:
     from config import CFG, SCALES
 
 from ml.hourly_encoder import N_HOURS_PER_DAY, N_HOURLY_CHANNELS, N_INTRADAY_DAYS
+try:
+    from ml.hourly_feedback import HourlyFeedbackEncoder, DayHourCrossAttention
+    HAS_INTRADAY_FEEDBACK = True
+except ImportError:
+    HAS_INTRADAY_FEEDBACK = False
 try:
     from xlstm import (xLSTMBlockStack, xLSTMBlockStackConfig, mLSTMBlockConfig)
     HAS_XLSTM = True
@@ -613,6 +612,12 @@ class MultiScaleHybridV3(nn.Module):
         self.vsn = VariableSelectionNetwork(
             n_streams=n_streams, d_model=TRUNK_OUT, dropout=0.15)
 
+        # Sprint 1.5: intraday feedback components
+        if HAS_INTRADAY_FEEDBACK:
+            self.intraday_enc   = HourlyFeedbackEncoder(out_dim=TRUNK_OUT)
+            self.day_hour_attn  = DayHourCrossAttention(d_model=TRUNK_OUT)
+        self.extremes_head = nn.Linear(TRUNK_OUT, 2)   # pred [dHigh, dLow]
+
         self.cls_head  = CalibratedClsHead(TRUNK_OUT)
         self.ohlc_head = OHLCHeadV2(TRUNK_OUT, future_bars=future_bars)
         self.aux_head  = AuxHead(TRUNK_OUT)
@@ -626,6 +631,8 @@ class MultiScaleHybridV3(nn.Module):
         self.dir_head._init_head()
         self.ohlc_head._init_head()
         self.econ_heads._init_heads()   # Sprint 2: после _init_weights — иначе bias=-4 обнулится
+        nn.init.xavier_uniform_(self.extremes_head.weight, gain=0.1)
+        nn.init.zeros_(self.extremes_head.bias)
 
     def _init_weights(self):
         for m in self.modules():
@@ -639,7 +646,8 @@ class MultiScaleHybridV3(nn.Module):
             elif isinstance(m, nn.LayerNorm):
                 nn.init.ones_(m.weight); nn.init.zeros_(m.bias)
 
-    def forward(self, imgs, nums, ctx=None, hourly=None):
+    def forward(self, imgs, nums, ctx=None, hourly=None,
+                intraday_feats=None, intraday_mask=None):
         feats = []
         for W in SCALES:
             feats.append(self.backbones[str(W)](imgs[W]))
@@ -666,13 +674,24 @@ class MultiScaleHybridV3(nn.Module):
         feats = [f.nan_to_num(nan=0., posinf=10., neginf=-10.) for f in feats]
         h = self.vsn(feats)
 
-        logits = self.cls_head(h)
-        ohlc = self.ohlc_head(h)
-        aux = self.aux_head(h)
-        dir_logit = self.dir_head(h)
-        econ = self.econ_heads(h)   # Sprint 2: dict с mfe_mae/fill_logit/edge_pred
+        # Sprint 1.5: intraday feedback refinement (backward-compat: feats=None -> skip)
+        next_hr_pred = None
+        if HAS_INTRADAY_FEEDBACK and intraday_feats is not None:
+            feats_f = intraday_feats.float().nan_to_num(nan=0.)
+            mask_f  = (intraday_mask.float() if intraday_mask is not None
+                       else torch.ones(feats_f.shape[:2], device=feats_f.device))
+            _, next_hr_pred, all_hidden = self.intraday_enc(feats_f, mask_f)
+            all_hidden = all_hidden.nan_to_num(nan=0., posinf=10., neginf=-10.)
+            h = self.day_hour_attn(h, all_hidden, mask_f)
 
-        return logits, ohlc, aux, dir_logit, intraday_pred, econ
+        logits    = self.cls_head(h)
+        ohlc      = self.ohlc_head(h)
+        aux       = self.aux_head(h)
+        dir_logit = self.dir_head(h)
+        econ      = self.econ_heads(h)
+        extremes  = self.extremes_head(h)   # [B, 2]: pred [dHigh, dLow]
+
+        return logits, ohlc, aux, dir_logit, intraday_pred, econ, next_hr_pred, extremes
 
 
 # ────────────────────────────────────────────────────────────

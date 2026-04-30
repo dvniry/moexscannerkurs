@@ -244,6 +244,76 @@ def denormalize_ohlc(ohlc_norm: np.ndarray, atr_ratio: float,
     return ohlc_norm * norm
 
 
+# ══════════════════════════════════════════════════════════════════
+# Sprint 1.5 — Intraday targets: dHigh / dLow текущего дня T0
+# ══════════════════════════════════════════════════════════════════
+
+INTRADAY_N_COLS = 2  # [norm_dHigh, norm_dLow]
+
+
+def build_intraday_targets(
+    daily_df: pd.DataFrame,
+    hourly_df,                  # pd.DataFrame or None
+    atr_ratio: np.ndarray,
+    future_bars: int = None,
+) -> np.ndarray:
+    """[N, 2]: нормированные [dHigh, dLow] текущего дня T0.
+
+    dHigh = max(hourly highs today) от close[i-1]
+    dLow  = min(hourly lows today)  от close[i-1]
+    Нормировка: / close[i-1] / (atr_ratio[i] * sqrt(future_bars))
+    Клампинг: [-5, +5]
+    """
+    if future_bars is None:
+        future_bars = CFG.future_bars
+
+    N = len(daily_df)
+    out = np.zeros((N, INTRADAY_N_COLS), dtype=np.float32)
+
+    if N == 0 or hourly_df is None or (hasattr(hourly_df, 'empty') and hourly_df.empty):
+        return out
+
+    hourly_by_date = {}
+    try:
+        for d, g in hourly_df.groupby(hourly_df.index.date):
+            hourly_by_date[d] = g
+    except Exception:
+        return out
+
+    close = daily_df['close'].values.astype(np.float64)
+    norm_factor = np.sqrt(float(future_bars))
+
+    for i in range(1, N):
+        ar = float(atr_ratio[i]) if i < len(atr_ratio) else 0.0
+        if not np.isfinite(ar) or ar < 5e-4:
+            continue
+
+        c_prev = close[i - 1]
+        if c_prev <= 0:
+            continue
+
+        try:
+            day = pd.Timestamp(daily_df.index[i]).date()
+        except Exception:
+            continue
+
+        day_h = hourly_by_date.get(day)
+        if day_h is None or len(day_h) == 0:
+            continue
+
+        denom = c_prev * ar * norm_factor
+        if denom < 1e-12:
+            continue
+
+        d_high = float(day_h['high'].max())
+        d_low  = float(day_h['low'].min())
+
+        out[i, 0] = float(np.clip((d_high - c_prev) / denom, -5.0, 5.0))
+        out[i, 1] = float(np.clip((d_low  - c_prev) / denom, -5.0, 5.0))
+
+    return out
+
+
 def ohlc_to_strategy_features(ohlc_pred: np.ndarray,
                                atr_ratio: float = None,
                                future_bars: int = None) -> dict:

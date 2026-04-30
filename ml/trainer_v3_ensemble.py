@@ -137,16 +137,17 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
         use_hourly=use_hourly).to(device)
     _init_cls_head(model)
 
-    # БАГ 3 FIX: gamma_per_class=(3.0, 1.0, 3.0) + direction_weight=0.80
+    # direction_weight=0.65: было 0.80, снижено т.к. модель имела DOWN-bias
+    # (dir_prob mean=0.326 при baseline=0.467; 0.80 давил слишком сильно в сторону DOWN)
     criterion = MultiTaskLossV3(
         cls_weight=cls_weights,
         gamma_per_class=(3.0, 1.0, 3.0),
-        label_smoothing=0.01,        # было 0.03 (по плану БАГ 3)
+        label_smoothing=0.01,
         future_bars=CFG.future_bars,
         huber_delta=0.3,
-        direction_weight=0.80,
-        reg_loss_weight=0.20,        # было 0.30 — выровнять с trainer_v3
-        aux_loss_weight=0.01,        # было 0.05 — критично, см. БАГ #B
+        direction_weight=0.65,
+        reg_loss_weight=0.20,
+        aux_loss_weight=0.01,
     ).to(device)
 
     # Sprint 2: cost-aware loss + DecisionLayer
@@ -231,7 +232,7 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
             nums = ({W: num_dict[W].to(device) for W in SCALES}
                     if num_dict is not None else None)
 
-            lo, op, _, dir_l, _, econ_p = _forward_unpack(model_eval, imgs, nums, ctx_t, ht)
+            lo, op, _, dir_l, _, econ_p, _, _ = _forward_unpack(model_eval, imgs, nums, ctx_t, ht)
 
             all_cls_logits.append(torch.softmax(lo, dim=1).cpu().numpy())
             all_dir_prob.append(torch.sigmoid(dir_l).cpu().numpy())
@@ -253,7 +254,7 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
             nums = ({W: num_dict[W].to(device) for W in SCALES}
                     if num_dict is not None else None)
 
-            _, _, _, dir_l, _, _ = _forward_unpack(model_eval, imgs, nums, ctx_t, ht)
+            _, _, _, dir_l, _, _, _, _ = _forward_unpack(model_eval, imgs, nums, ctx_t, ht)
 
             val_dir_probs_list.append(torch.sigmoid(dir_l).cpu().numpy())
             val_trues_list.append(cls_y.numpy())
@@ -480,6 +481,20 @@ def main():
     ohlc_test = np.array(ohlc_test, dtype=np.float32)
     econ_test = np.array(econ_test, dtype=np.float32) if econ_test else None
 
+    # Sprint 4: собираем даты тест-сэмплов для выравнивания с HourlySpecialist
+    from ml.dataset_v3 import _dates_path as _dp
+    test_dates_list = []
+    for i in idx_test:
+        ticker, local_idx = dataset.records[int(i)]
+        dp = _dp(ticker)
+        if os.path.exists(dp):
+            d_arr = np.load(dp, allow_pickle=True)
+            if local_idx < len(d_arr):
+                test_dates_list.append(str(d_arr[local_idx]))
+                continue
+        test_dates_list.append("")
+    test_dates_arr = np.array(test_dates_list, dtype=object)
+
     # Единственное место сбора atr_ratio — никакого дублирования
     atr_ratio_arr = _collect_atr_ratio(dataset, idx_test)
 
@@ -566,6 +581,8 @@ def main():
         save_kwargs['decision_confidence'] = ens['decision_confidence']
     if econ_test is not None and len(econ_test) > 0:
         save_kwargs['econ_test'] = econ_test
+    if len(test_dates_arr) > 0 and any(d != "" for d in test_dates_arr):
+        save_kwargs['test_dates'] = test_dates_arr
     np.savez(out_path, **save_kwargs)
     print(f'\n  📦 → {out_path}')
 

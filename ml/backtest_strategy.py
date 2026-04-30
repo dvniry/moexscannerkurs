@@ -301,6 +301,8 @@ def simulate_decision_strategy(
         mfe_s = float(mfe_mae_pred[t, 2])
         mae_s = float(mfe_mae_pred[t, 3])
 
+        rng = np.random.default_rng(t)   # детерминировано per-sample
+
         if sig == 0:   # BUY
             n_long_signals += 1
             n_long_filled  += 1   # market entry → всегда заполнено
@@ -311,9 +313,14 @@ def simulate_decision_strategy(
                 tp_hit = real_H >= tp
                 sl_hit = real_L <= sl
                 if tp_hit and sl_hit:
-                    # консервативно — SL первый (sl_first)
-                    gross = sl - entry_delta
-                    exit_t = 'SL_worst'
+                    # bm_formula: P(TP first) = sl_mult/(sl_mult+tp_mult) ≈ mae/(mae+mfe)
+                    p_tp = mae_l / (mae_l + mfe_l)
+                    if rng.random() < p_tp:
+                        gross = tp - entry_delta
+                        exit_t = 'TP_bm'
+                    else:
+                        gross = sl - entry_delta
+                        exit_t = 'SL_bm'
                 elif tp_hit:
                     gross = tp - entry_delta
                     exit_t = 'TP'
@@ -337,8 +344,13 @@ def simulate_decision_strategy(
                 tp_hit = real_L <= tp
                 sl_hit = real_H >= sl
                 if tp_hit and sl_hit:
-                    gross = entry_delta - sl
-                    exit_t = 'SL_worst'
+                    p_tp = mae_s / (mae_s + mfe_s)
+                    if rng.random() < p_tp:
+                        gross = entry_delta - tp
+                        exit_t = 'TP_bm'
+                    else:
+                        gross = entry_delta - sl
+                        exit_t = 'SL_bm'
                 elif tp_hit:
                     gross = entry_delta - tp
                     exit_t = 'TP'
@@ -379,6 +391,78 @@ def simulate_decision_strategy(
         'n_signals_short': n_short_signals,
     }
     return trades, diag
+
+
+# ────────────────────────────────────────────────────────────
+# Sprint 1.5: Intraday Refinement Simulation
+# ────────────────────────────────────────────────────────────
+
+def simulate_intraday_refinement(
+    model,
+    device,
+    morning_signal: dict,
+    imgs_batch: dict,
+    nums_batch: dict,
+    ctx_batch,
+    hourly_batch,
+    intraday_feats_full,    # [1, T, 11] full day features
+    known_hours_list=(1, 3, 7),
+    cancel_threshold: float = 0.6,
+):
+    """Симулирует авторегрессионное уточнение прогноза в течение дня.
+
+    На каждом шаге `known_hours` обрезает маску и пересчитывает прогноз.
+    Возвращает dict {hour: refined_signal} где refined_signal содержит:
+        dir_prob, extremes_pred, action ('HOLD'|'UPDATE'|'CANCEL')
+
+    cancel_threshold: если dir_prob упал ниже morning_dir_prob * threshold -> CANCEL.
+    """
+    import torch
+
+    model.eval()
+    results = {0: morning_signal}
+
+    morning_dir = float(morning_signal.get('dir_prob', 0.5))
+
+    with torch.no_grad():
+        for known_h in known_hours_list:
+            T = intraday_feats_full.shape[1]
+            mask = torch.zeros(1, T, device=device)
+            mask[:, :min(known_h, T)] = 1.0
+
+            feats = intraday_feats_full.to(device)
+
+            out = model(
+                imgs_batch, nums_batch, ctx_batch, hourly_batch,
+                intraday_feats=feats, intraday_mask=mask,
+            )
+
+            # 8-tuple: logits, ohlc, aux, dir_logit, intraday_pred, econ, next_hr_pred, extremes
+            if len(out) >= 8:
+                _, _, _, dir_logit, _, econ_p, _, extremes = out
+            elif len(out) >= 6:
+                _, _, _, dir_logit, _, econ_p = out[:6]
+                extremes = None
+            else:
+                _, _, _, dir_logit = out[:4]
+                econ_p = None; extremes = None
+
+            dir_prob = float(torch.sigmoid(dir_logit).mean().item())
+            extremes_np = extremes.cpu().numpy() if extremes is not None else None
+
+            action = 'UPDATE'
+            if dir_prob < morning_dir * cancel_threshold:
+                action = 'CANCEL'
+
+            results[known_h] = {
+                'dir_prob': dir_prob,
+                'extremes': extremes_np,
+                'econ': {k: v.cpu().numpy() for k, v in econ_p.items()} if econ_p else None,
+                'action': action,
+                'known_hours': known_h,
+            }
+
+    return results
 
 
 # ────────────────────────────────────────────────────────────

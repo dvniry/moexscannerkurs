@@ -11,7 +11,7 @@
 """
 import os
 os.environ['GRPC_DNS_RESOLVER'] = 'native'
-import sys, argparse, math
+import sys, argparse, math, random
 from collections import Counter
 
 import numpy as np
@@ -31,9 +31,17 @@ sys.path.insert(0, os.path.abspath(
 
 from ml.config import CFG, SCALES
 from ml.dataset_v3 import class_distribution
+try:
+    from ml.hourly_feedback import IntradayConsistencyLoss
+    _intraday_fb_loss_fn = IntradayConsistencyLoss()
+    HAS_INTRADAY_FB = True
+except ImportError:
+    HAS_INTRADAY_FB = False
+    _intraday_fb_loss_fn = None
 
 
-INTRADAY_LOSS_WEIGHT = 0.15  # можно и 0.2
+INTRADAY_LOSS_WEIGHT = 0.15   # HourlyEncoder slot-head (past days)
+INTRADAY_FB_LOSS_WEIGHT = 0.07  # Sprint 1.5: HourlyFeedbackEncoder (current day T0)
 ECON_LOSS_WEIGHT     = 0.50  # Sprint 2: 0.30→0.50 — edge_head не сходился при 0.30
                               # 0.5 → 0.3 после sanity: econ доминировал и
                               # выкручивал edge_pred к границам clamp.
@@ -150,30 +158,35 @@ def _masked_intraday_loss(pred, target, mask):
     return F.binary_cross_entropy(pred[valid], target[valid])
 
 
-def _forward_unpack(model, imgs, nums, ctx_t, hourly_t):
+def _forward_unpack(model, imgs, nums, ctx_t, hourly_t,
+                    intraday_feats_t=None, intraday_mask_t=None):
     """Универсальная распаковка forward модели.
 
     Поддерживает (для back-compat):
-      4-tuple: logits, ohlc, aux, dir_logit                  ← v3.19, v4 Kronos
-      5-tuple: + intraday_pred                               ← v3.20.0
-      6-tuple: + econ (dict)                                 ← v3.21 Sprint 2
+      4-tuple: logits, ohlc, aux, dir_logit                  <- v3.19, v4 Kronos
+      5-tuple: + intraday_pred                               <- v3.20.0
+      6-tuple: + econ (dict)                                 <- v3.21 Sprint 2
+      8-tuple: + next_hr_pred, extremes                      <- v3.21 Sprint 1.5
     """
-    out = model(imgs, nums, ctx_t, hourly=hourly_t)
+    out = model(imgs, nums, ctx_t, hourly=hourly_t,
+                intraday_feats=intraday_feats_t, intraday_mask=intraday_mask_t)
     if not isinstance(out, (tuple, list)):
         raise ValueError(f"Forward returned {type(out)}, expected tuple/list")
     n = len(out)
-    if n == 6:
+    if n == 8:
+        lo, op, aux, dir_l, intraday_p, econ, next_hr_pred, extremes = out
+    elif n == 6:
         lo, op, aux, dir_l, intraday_p, econ = out
+        next_hr_pred = None; extremes = None
     elif n == 5:
         lo, op, aux, dir_l, intraday_p = out
-        econ = None
+        econ = None; next_hr_pred = None; extremes = None
     elif n == 4:
         lo, op, aux, dir_l = out
-        intraday_p = None
-        econ = None
+        intraday_p = None; econ = None; next_hr_pred = None; extremes = None
     else:
-        raise ValueError(f"Forward returned {n} values, expected 4/5/6")
-    return lo, op, aux, dir_l, intraday_p, econ
+        raise ValueError(f"Forward returned {n} values, expected 4/5/6/8")
+    return lo, op, aux, dir_l, intraday_p, econ, next_hr_pred, extremes
 
 
 def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
@@ -202,6 +215,7 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
         total_aux = 0.0
         total_intra = 0.0
         total_econ = 0.0
+        total_intra_fb = 0.0
         n_steps = 0
 
         optimizer.zero_grad()
@@ -209,8 +223,10 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
         _last_cls_y = None
 
         for step, batch in enumerate(tr_loader, 1):
+            # Sprint 1.5: 13 elements (3 new: intra_feats, intra_feats_mask, intra_extremes)
             (imgs_dict, num_dict, cls_y, ohlc_y, ctx,
-             hourly_data, aux_y, intraday_y, intraday_mask, econ_y) = batch
+             hourly_data, aux_y, intraday_y, intraday_mask, econ_y,
+             intra_feats, intra_feats_mask, intra_extremes) = batch
 
             imgs = {W: imgs_dict[W].to(device) for W in SCALES}
             cls_y = cls_y.to(device)
@@ -224,6 +240,20 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
             econ_t = (econ_y.to(device) if econ_y is not None else None)
             nums = ({W: num_dict[W].to(device) for W in SCALES}
                     if num_dict is not None else None)
+
+            # Sprint 1.5: intraday feedback tensors
+            intra_feats_t    = intra_feats.to(device) if intra_feats is not None else None
+            intra_mask_t     = intra_feats_mask.to(device) if intra_feats_mask is not None else None
+            intra_extremes_t = intra_extremes.to(device) if intra_extremes is not None else None
+
+            # Random cutoff augmentation: 50% chance -> simulate partial day
+            if intra_feats_t is not None and intra_mask_t is not None:
+                if random.random() < 0.5:
+                    n_known = int(intra_mask_t.sum(dim=1).float().mean().item())
+                    if n_known > 1:
+                        cutoff = random.randint(1, n_known)
+                        intra_mask_t = intra_mask_t.clone()
+                        intra_mask_t[:, cutoff:] = 0.0
 
             if epoch == 1 and step == 1:
                 print('\n  [DBG] ── первый батч ──')
@@ -249,8 +279,8 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                           f'edge_l={econ_t[:,9].mean():+.5f}')
 
                 with torch.no_grad():
-                    lo_d, op_d, aux_d, dir_d, intra_d, econ_d = _forward_unpack(
-                        model, imgs, nums, ctx_t, hourly_t
+                    lo_d, op_d, aux_d, dir_d, intra_d, econ_d, _, _ = _forward_unpack(
+                        model, imgs, nums, ctx_t, hourly_t, intra_feats_t, intra_mask_t
                     )
                     lo_d = lo_d.float().clamp(-15., 15.).nan_to_num(0.)
                     l, lc, lr2, la = criterion(
@@ -274,8 +304,8 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                     print(f'  [DBG] econ_pred edge[:2]:    {econ_d["edge_pred"][:2].detach().cpu().numpy()}')
                 print('  [DBG] ──────────────────\n')
 
-            lo, op, aux, dir_l, intraday_p, econ_p = _forward_unpack(
-                model, imgs, nums, ctx_t, hourly_t
+            lo, op, aux, dir_l, intraday_p, econ_p, next_hr_pred, extremes_pred = _forward_unpack(
+                model, imgs, nums, ctx_t, hourly_t, intra_feats_t, intra_mask_t
             )
 
             lo = lo.float().clamp(-15., 15.).nan_to_num(nan=0.)
@@ -298,9 +328,25 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
             if econ_criterion is not None and econ_p is not None and econ_t is not None:
                 lecon, _ = econ_criterion(econ_p, econ_t.float())
 
+            # Sprint 1.5: intraday feedback loss (warmup: first 5 epochs = 0)
+            lintra_fb = torch.tensor(0., device=device)
+            fb_weight = INTRADAY_FB_LOSS_WEIGHT if epoch > 5 else 0.0
+            if (fb_weight > 0 and HAS_INTRADAY_FB and _intraday_fb_loss_fn is not None
+                    and next_hr_pred is not None and intra_feats_t is not None):
+                _intraday_fb_loss_fn.to(device)
+                lintra_fb = _intraday_fb_loss_fn(
+                    next_hr_pred, intra_feats_t,
+                    extremes_pred, intra_extremes_t,
+                    intra_mask_t if intra_mask_t is not None
+                    else torch.ones(next_hr_pred.shape[:2], device=device),
+                )
+                if not torch.isfinite(lintra_fb):
+                    lintra_fb = torch.tensor(0., device=device)
+
             loss = (base_loss
                     + INTRADAY_LOSS_WEIGHT * lintra
-                    + ECON_LOSS_WEIGHT     * lecon)
+                    + ECON_LOSS_WEIGHT     * lecon
+                    + fb_weight           * lintra_fb)
 
             if not torch.isfinite(loss):
                 print(f'  [WARN] e={epoch} s={step} loss=nan — skip')
@@ -311,11 +357,12 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
 
             _last_lo = lo.detach()
             _last_cls_y = cls_y.detach()
-            total_cls += lcls.item()
-            total_reg += lreg.item()
-            total_aux += laux.item()
-            total_intra += lintra.item()
-            total_econ += lecon.item()
+            total_cls      += lcls.item()
+            total_reg      += lreg.item()
+            total_aux      += laux.item()
+            total_intra    += lintra.item()
+            total_econ     += lecon.item()
+            total_intra_fb += lintra_fb.item()
             n_steps += 1
 
             if step % accum_steps == 0 or step == len(tr_loader):
@@ -371,7 +418,8 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
         with torch.no_grad():
             for batch in val_loader:
                 (imgs_dict, num_dict, cls_y, ohlc_y, ctx,
-                 hourly_data, aux_y, intraday_y, intraday_mask, econ_y) = batch
+                 hourly_data, aux_y, intraday_y, intraday_mask, econ_y,
+                 intra_feats, intra_feats_mask, _) = batch
 
                 imgs = {W: imgs_dict[W].to(device) for W in SCALES}
                 ctx_t = ctx.to(device) if ctx_dim > 0 else None
@@ -381,9 +429,11 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 intraday_m = (intraday_mask.to(device) if intraday_mask is not None else None)
                 nums = ({W: num_dict[W].to(device) for W in SCALES}
                         if num_dict is not None else None)
+                intra_feats_t = intra_feats.to(device) if intra_feats is not None else None
+                intra_mask_t  = intra_feats_mask.to(device) if intra_feats_mask is not None else None
 
-                lo, op, _, dir_l, intraday_p, econ_p = _forward_unpack(
-                    model, imgs, nums, ctx_t, hourly_t
+                lo, op, _, dir_l, intraday_p, econ_p, _, _ = _forward_unpack(
+                    model, imgs, nums, ctx_t, hourly_t, intra_feats_t, intra_mask_t
                 )
 
                 val_preds.extend(lo.argmax(1).cpu().numpy())
@@ -457,6 +507,7 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
               f'reg={total_reg/max(n_steps,1):.5f} '
               f'aux={total_aux/max(n_steps,1):.5f} '
               f'intra={total_intra/max(n_steps,1):.5f} '
+              f'intra_fb={total_intra_fb/max(n_steps,1):.5f} '
               f'econ={total_econ/max(n_steps,1):.5f} | '
               f'acc={val_acc:.4f} mF1={macro_f1:.4f} | '
               f'F1: up={buy_f1:.3f} fl={hold_f1:.3f} dn={sell_f1:.3f} | '
