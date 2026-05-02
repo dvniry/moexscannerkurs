@@ -294,6 +294,7 @@ def _align_arrays(
     imgs, nums, cls, ohlc, ctx=None, hourly=None, aux=None,
     intraday_targets=None, intraday_mask=None, econ=None,
     intraday_feats=None, intraday_feats_mask=None, intraday_extremes=None,
+    dates=None,
 ):
     n = min(len(cls), len(ohlc))
     for W in SCALES:
@@ -316,6 +317,8 @@ def _align_arrays(
         n = min(n, len(intraday_feats_mask))
     if intraday_extremes is not None:
         n = min(n, len(intraday_extremes))
+    if dates is not None:
+        n = min(n, len(dates))
 
     cls  = cls[:n]
     ohlc = ohlc[:n]
@@ -331,10 +334,12 @@ def _align_arrays(
     if intraday_feats is not None:          intraday_feats = intraday_feats[:n]
     if intraday_feats_mask is not None:     intraday_feats_mask = intraday_feats_mask[:n]
     if intraday_extremes is not None:       intraday_extremes = intraday_extremes[:n]
+    if dates is not None:             dates = dates[:n]
 
     return (imgs, nums, cls, ohlc, ctx, hourly, aux,
             intraday_targets, intraday_mask, econ,
-            intraday_feats, intraday_feats_mask, intraday_extremes)
+            intraday_feats, intraday_feats_mask, intraday_extremes,
+            dates)
 
 
 def _cache_dir():
@@ -1153,11 +1158,24 @@ def build_multiscale_dataset_v3(
             if os.path.exists(_ctx_path(ticker)) else None
         )
 
-        return _align_arrays(
+        # B-1: подаём dates_arr (если файл есть) в _align_arrays, чтобы он
+        # обрезался синхронно с другими массивами. Внешний контракт этой функции
+        # остаётся 13-tuple — отбрасываем dates перед return.
+        dates_cached = (
+            np.load(_dates_path(ticker)).astype("U10")
+            if os.path.exists(_dates_path(ticker)) else None
+        )
+        aligned = _align_arrays(
             imgs, nums, cls, ohlc, ctx, hourly, aux,
             intraday_targets, intraday_mask, econ,
             intraday_feats, intraday_feats_mask, intraday_extremes,
+            dates=dates_cached,
         )
+        # _align_arrays теперь возвращает 14 элементов (dates последним).
+        # Если dates подавался — пересохраняем усечённую версию обратно в кэш.
+        if dates_cached is not None and aligned[-1] is not None:
+            np.save(_dates_path(ticker), aligned[-1])
+        return aligned[:-1]
 
     # ── Полное построение ─────────────────────────────────────────
     print(f"  {ticker}: полное построение датасета v3.7.0...")
@@ -1219,9 +1237,10 @@ def build_multiscale_dataset_v3(
     cls  = np.array(y_cls_list,  dtype=np.int64)
     ohlc = np.array(y_ohlc_list, dtype=np.float32)
     ctx  = np.array(ctx_list, dtype=np.float32) if ctx_list else None
-    # Sprint 4: даты для выравнивания с HourlySpecialist
+    # Sprint 4: даты для выравнивания с HourlySpecialist.
+    # dtype='U10' (YYYY-MM-DD) вместо object — читается без allow_pickle.
     dates_arr = np.array(
-        [str(df.index[idx].date()) for idx in valid_daily_indices], dtype=object)
+        [str(df.index[idx].date()) for idx in valid_daily_indices], dtype='U10')
     if len(cls) == 0:
         print(f"  [SKIP] {ticker}: no valid samples after label filtering")
         return _empty_result()
@@ -1360,10 +1379,15 @@ def build_multiscale_dataset_v3(
         imgs, nums, cls, ohlc, ctx, hourly, aux,
         intraday_targets, intraday_mask, econ,
         intraday_feats, intraday_feats_mask, intraday_extremes,
+        dates=dates_arr,
     )
     (imgs, nums, cls, ohlc, ctx, hourly, aux,
      intraday_targets, intraday_mask, econ,
-     intraday_feats, intraday_feats_mask, intraday_extremes) = result
+     intraday_feats, intraday_feats_mask, intraday_extremes,
+     dates_arr) = result
+
+    assert len(dates_arr) == len(cls), \
+        f"[BUG B-1] dates_arr len {len(dates_arr)} != cls len {len(cls)}"
 
     assert aux.shape[1] == 3, f"После _align_arrays aux.shape={aux.shape}"
     assert econ.shape[1] == ECON_N_COLS, f"После _align_arrays econ.shape={econ.shape}"

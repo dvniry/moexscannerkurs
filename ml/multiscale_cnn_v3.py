@@ -445,30 +445,38 @@ class EconomicHeads(nn.Module):
         self._init_heads()
 
     def _init_heads(self):
-        for module in (self.mfe_head, self.fill_head, self.edge_head):
+        # B-16 fix: edge_head получает gain=0.1 (вместо 0.01 у mfe/fill),
+        # чтобы реально отходить от bias. Прежний gain=0.01 + bias=0.002 +
+        # penalty(cost - edge) совместно "приклеивали" edge_pred к ~0.002.
+        for module in (self.mfe_head, self.fill_head):
             linears = [m for m in module if isinstance(m, nn.Linear)]
-            # Финальный слой — очень мягкая init: старт около 0
             nn.init.xavier_uniform_(linears[-1].weight, gain=0.01)
             nn.init.zeros_(linears[-1].bias)
-            # Промежуточный — стандартная init
             nn.init.xavier_uniform_(linears[0].weight, gain=0.5)
             nn.init.zeros_(linears[0].bias)
+
+        edge_linears = [m for m in self.edge_head if isinstance(m, nn.Linear)]
+        # B-16: финальный edge с gain=0.1 — диапазон выходов ~0.05 при std входов ~1
+        nn.init.xavier_uniform_(edge_linears[-1].weight, gain=0.1)
+        nn.init.zeros_(edge_linears[-1].bias)
+        nn.init.xavier_uniform_(edge_linears[0].weight, gain=0.5)
+        nn.init.zeros_(edge_linears[0].bias)
+
         # mfe_head: разные биасы для mfe (cols 0,2) и mae (cols 1,3).
         # mfe_long/short → bias=-3.5: softplus≈0.030 (ожидаемый upside)
         # mae_long/short → bias=-4.5: softplus≈0.011 (ожидаемый drawdown)
         # rr_init = 0.030 / 0.011 ≈ 2.7 > min_rr=0.8 с первого батча,
         # поэтому модель сразу генерирует BUY и SELL, а не только HOLD.
-        # После схождения loss подтянет выходы к реальным таргетам.
         mfe_last = [m for m in self.mfe_head if isinstance(m, nn.Linear)][-1]
         with torch.no_grad():
             mfe_last.bias[0] = -3.5   # mfe_long
             mfe_last.bias[1] = -4.5   # mae_long
             mfe_last.bias[2] = -3.5   # mfe_short
             mfe_last.bias[3] = -4.5   # mae_short
-        # edge_head: стартуем на уровне cost=0.002, чтобы er_init ≈ 1.0 (break-even).
-        # Предотвращает HOLD=100% при er_init≈0 (gain=0.01 без bias даёт edge≈0).
-        edge_last = [m for m in self.edge_head if isinstance(m, nn.Linear)][-1]
-        nn.init.constant_(edge_last.bias, 0.002)
+        # B-16: edge_bias=0 (было 0.002). Penalty + target пусть сами решают,
+        # куда тянуть edge. Прежний bias=0.002 закреплял edge_pred к cost
+        # и не давал градиенту работать.
+        nn.init.zeros_(edge_linears[-1].bias)
 
     def forward(self, x: torch.Tensor) -> dict:
         # Softplus β=1 (стандарт): без мёртвой зоны при отрицательных входах
@@ -499,16 +507,19 @@ class EconomicLoss(nn.Module):
     """
     def __init__(self, cost_roundtrip: float = 0.002,
                  w_mfe: float = 0.5, w_fill: float = 0.3,
-                 w_edge: float = 0.5, w_penalty: float = 0.05):
-        # w_penalty снижен с 0.2 → 0.05: при 0.2 penalty доминировал и пушил
-        # edge_pred к верхней границе clamp (наблюдалось edge=0.2 mean, std=0).
-        # Penalty всё ещё работает как мягкая регуляризация осторожности.
+                 w_edge: float = 1.0, w_penalty: float = 0.05,
+                 edge_beta: float = 0.005):
+        # B-16 fix: w_edge 0.5 → 1.0 (×2) — edge регрессия слабый сигнал, нужен больший вес.
+        # edge_beta 0.001 → 0.005 (×5) — smooth_l1 c beta=0.001 был слишком плоский
+        # в районе target≈0.001, gradient к edge_head был мал.
+        # w_penalty=0.05 — оставлен как мягкая регуляризация осторожности.
         super().__init__()
         self.cost_roundtrip = float(cost_roundtrip)
         self.w_mfe = w_mfe
         self.w_fill = w_fill
         self.w_edge = w_edge
         self.w_penalty = w_penalty
+        self.edge_beta = edge_beta
 
     def forward(self, econ_pred: dict, econ_target: torch.Tensor):
         # Таргеты
@@ -527,7 +538,7 @@ class EconomicLoss(nn.Module):
 
         l_mfe  = F.smooth_l1_loss(econ_pred["mfe_mae"],   mfe_mae_target, beta=0.01)
         l_fill = F.binary_cross_entropy_with_logits(econ_pred["fill_logit"], fill_target)
-        l_edge = F.smooth_l1_loss(econ_pred["edge_pred"], edge_target,    beta=0.001)
+        l_edge = F.smooth_l1_loss(econ_pred["edge_pred"], edge_target,    beta=self.edge_beta)
 
         edge_l = econ_pred["edge_pred"][:, 0]
         edge_s = econ_pred["edge_pred"][:, 1]

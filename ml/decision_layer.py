@@ -61,9 +61,13 @@ class DecisionLayer:
     def __init__(
         self,
         costs: Optional[TradingCosts] = None,
-        min_edge_ratio:      float = 4.0,   # было 2.0; повышено т.к. edge_pred ~0, нужна высокая уверенность
-        min_dir_prob:        float = 0.70,  # BUY: dir_prob >= 0.70
-        min_sell_dir_prob:   float = 0.85,  # SELL: dir_prob <= 0.15 (ужесточено: модель имеет DOWN-bias, ~67% DOWN)
+        # B-15 (sweep 2026-05-01): оптимальные пороги по expectancy.
+        # До sweep: edge_r=4.0, dir=0.70, sell=0.85 → exp=-1.84%/trade (убыточно).
+        # После sweep:                                  exp=+1.43%/trade (прибыльно).
+        min_edge_ratio:      float = 5.0,    # 4.0 → 5.0 (edge_pred ~0, нужен жёстче cut)
+        min_dir_prob:        float = 0.75,   # 0.70 → 0.75 (более уверенный BUY)
+        min_sell_dir_prob:   float = 0.55,   # 0.85 → 0.55: 0.85 отбрасывал 76% SELL.
+                                             # 0.55 → dir_prob ≤ 0.45 (вместо ≤ 0.15)
         min_fill_prob:       float = 0.40,
         min_rr:              float = 1.2,
     ):
@@ -118,10 +122,11 @@ class DecisionLayer:
             & (er_s           >= self.min_edge_ratio)
         )
 
-        # Если оба условия выполнены — направление по dir_prob;
-        # SELL только если long_ok=False или dir_prob < 0.5.
-        is_buy  = long_ok  & (~short_ok | (dir_prob >= 0.5))
-        is_sell = short_ok & ~is_buy
+        # При текущих порогах (min_dir_prob=0.70, min_sell_dir_prob=0.85)
+        # long_ok и short_ok взаимоисключающие — тай-брейк недостижим.
+        # Оставляем явное «иначе HOLD» через приоритет long над short при коллизии.
+        is_buy  = long_ok
+        is_sell = short_ok & ~long_ok
 
         sig_long  = torch.full_like(dir_prob, SIG_BUY,  dtype=torch.long)
         sig_hold  = torch.full_like(dir_prob, SIG_HOLD, dtype=torch.long)
@@ -169,6 +174,121 @@ class DecisionLayer:
         }
         out = self.decide(dir_logit, econ)
         return {k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else v) for k, v in out.items()}
+
+
+class RegimeAwareDecisionLayer:
+    """Sprint 5 / Idea #3: per-regime thresholds.
+
+    Per-regime sweep на текущем npz показал разительную разницу прибыльности:
+        bear (8% времени):  +0.375%/trade  при edge=7.0, dir=0.80, sell=0.50
+        side (44%):         +0.006%/trade  при edge=6.5, dir=0.55, sell=0.50
+        bull (48%):         −0.190%/trade  (убыточно даже на best thresholds)
+
+    Стратегия: торгуем агрессивно в bear, осторожно в side, ОТКЛЮЧАЕМ в bull.
+    Bull-режим = HOLD always (модель имеет DOWN-bias и плохо работает в восходящем рынке).
+    """
+
+    # Регимы: 0=bear, 1=side, 2=bull
+    DEFAULT_REGIME_THRESHOLDS = {
+        0: {  # bear: модель работает лучше всего
+            "min_edge_ratio": 7.0,
+            "min_dir_prob": 0.80,
+            "min_sell_dir_prob": 0.50,
+            "min_fill_prob": 0.40,
+            "min_rr": 1.2,
+        },
+        1: {  # side: на грани прибыльности — мягче пороги для большего N
+            "min_edge_ratio": 6.5,
+            "min_dir_prob": 0.55,
+            "min_sell_dir_prob": 0.50,
+            "min_fill_prob": 0.40,
+            "min_rr": 1.2,
+        },
+        2: {  # bull: убыточно — отключаем торговлю (нереализуемые пороги)
+            "min_edge_ratio": 99.0,
+            "min_dir_prob": 0.99,
+            "min_sell_dir_prob": 0.99,
+            "min_fill_prob": 0.99,
+            "min_rr": 99.0,
+        },
+        -1: {  # unknown regime: fallback на B-15 default
+            "min_edge_ratio": 5.0,
+            "min_dir_prob": 0.75,
+            "min_sell_dir_prob": 0.55,
+            "min_fill_prob": 0.40,
+            "min_rr": 1.2,
+        },
+    }
+    REGIME_NAMES = {0: "bear", 1: "side", 2: "bull", -1: "unknown"}
+
+    def __init__(
+        self,
+        costs: Optional[TradingCosts] = None,
+        regime_thresholds: Optional[dict[int, dict]] = None,
+    ):
+        self.costs = costs or TradingCosts()
+        self.regime_thresholds = regime_thresholds or self.DEFAULT_REGIME_THRESHOLDS
+        # Pre-build per-regime DecisionLayer instances
+        self._layers: dict[int, DecisionLayer] = {}
+        for rid, params in self.regime_thresholds.items():
+            self._layers[rid] = DecisionLayer(costs=self.costs, **params)
+
+    def decide_numpy(
+        self,
+        dir_prob:   np.ndarray,
+        mfe_mae:    np.ndarray,
+        fill_prob:  np.ndarray,
+        edge_pred:  np.ndarray,
+        regime:     np.ndarray,        # [N] int8: 0=bear, 1=side, 2=bull, -1=unknown
+    ) -> dict:
+        """Применяет per-regime пороги. Сэмплы группируются по regime ID,
+        для каждой группы вызывается соответствующий DecisionLayer.
+        """
+        n = len(dir_prob)
+        signal     = np.full(n, SIG_HOLD, dtype=np.int64)
+        confidence = np.zeros(n, dtype=np.float32)
+
+        unique_regimes = np.unique(regime)
+        for rid in unique_regimes:
+            rid_int = int(rid)
+            mask = (regime == rid)
+            if not mask.any():
+                continue
+            layer = self._layers.get(rid_int, self._layers.get(-1))
+            if layer is None:
+                continue
+            out = layer.decide_numpy(
+                dir_prob  = dir_prob[mask],
+                mfe_mae   = mfe_mae[mask],
+                fill_prob = fill_prob[mask],
+                edge_pred = edge_pred[mask],
+            )
+            signal[mask]     = out["signal"]
+            confidence[mask] = out["confidence"]
+
+        return {
+            "signal":     signal,
+            "confidence": confidence,
+        }
+
+    def coverage_per_regime(self, signal: np.ndarray, regime: np.ndarray) -> dict:
+        """Coverage по регимам — для диагностики."""
+        out = {}
+        for rid in (0, 1, 2, -1):
+            mask = (regime == rid)
+            n = int(mask.sum())
+            if n == 0:
+                continue
+            sig_r = signal[mask]
+            n_buy  = int((sig_r == SIG_BUY ).sum())
+            n_sell = int((sig_r == SIG_SELL).sum())
+            out[self.REGIME_NAMES[rid]] = {
+                "n":        n,
+                "buy":      n_buy,
+                "sell":     n_sell,
+                "coverage": (n_buy + n_sell) / n,
+            }
+        return out
 
 
 def coverage_report(signal: torch.Tensor) -> dict:

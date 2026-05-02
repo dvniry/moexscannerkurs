@@ -137,15 +137,18 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
         use_hourly=use_hourly).to(device)
     _init_cls_head(model)
 
-    # direction_weight=0.65: было 0.80, снижено т.к. модель имела DOWN-bias
-    # (dir_prob mean=0.326 при baseline=0.467; 0.80 давил слишком сильно в сторону DOWN)
+    # B-11 fix: direction_weight 0.65→0.40 (default v3.19) — dir_head забирал
+    # слишком много градиента, cls_head в коллапсе на FLAT.
+    # gamma_per_class (3,1,3)→(2,0.5,2) — снижаем focal на FLAT, чтобы он не
+    # доминировал; уменьшаем gamma UP/DOWN с 3 до 2, чтобы дать им больше
+    # gradient на лёгких сэмплах (модель сейчас не предсказывает их вообще).
     criterion = MultiTaskLossV3(
         cls_weight=cls_weights,
-        gamma_per_class=(3.0, 1.0, 3.0),
+        gamma_per_class=(2.0, 0.5, 2.0),
         label_smoothing=0.01,
         future_bars=CFG.future_bars,
         huber_delta=0.3,
-        direction_weight=0.65,
+        direction_weight=0.40,
         reg_loss_weight=0.20,
         aux_loss_weight=0.01,
     ).to(device)
@@ -481,11 +484,14 @@ def main():
     ohlc_test = np.array(ohlc_test, dtype=np.float32)
     econ_test = np.array(econ_test, dtype=np.float32) if econ_test else None
 
-    # Sprint 4: собираем даты тест-сэмплов для выравнивания с HourlySpecialist
+    # Sprint 4: собираем даты тест-сэмплов для выравнивания с HourlySpecialist.
+    # B-13: также собираем tickers — нужно для (date, ticker) join в meta_features.
     from ml.dataset_v3 import _dates_path as _dp
     test_dates_list = []
+    test_tickers_list = []
     for i in idx_test:
         ticker, local_idx = dataset.records[int(i)]
+        test_tickers_list.append(ticker)
         dp = _dp(ticker)
         if os.path.exists(dp):
             d_arr = np.load(dp, allow_pickle=True)
@@ -493,7 +499,10 @@ def main():
                 test_dates_list.append(str(d_arr[local_idx]))
                 continue
         test_dates_list.append("")
-    test_dates_arr = np.array(test_dates_list, dtype=object)
+    # Используем фиксированную строку 'U10' (YYYY-MM-DD) вместо object —
+    # читается без allow_pickle и быстрее.
+    test_dates_arr   = np.array(test_dates_list,   dtype='U10')
+    test_tickers_arr = np.array(test_tickers_list, dtype='U16')
 
     # Единственное место сбора atr_ratio — никакого дублирования
     atr_ratio_arr = _collect_atr_ratio(dataset, idx_test)
@@ -520,17 +529,22 @@ def main():
     te_ds = Subset(dataset, idx_test.tolist())
 
     # ── Class weights ─────────────────────────────────────────────────────
+    # B-11: было max-normalize → FLAT (самый редкий) получал max=1.0, UP/DOWN ~0.75.
+    # Это запирало модель в коллапсе на FLAT (recall ≈ 0.99). Фикс:
+    #   1) sqrt-rescale БЕЗ max-normalize — UP/DOWN получают свой реальный вес
+    #   2) cap FLAT до 1.0 (даже если inverse-freq даёт больше) — иначе FLAT
+    #      опять доминирует за счёт того что он самый редкий по построению
     counts_dict = Counter(y_tr.tolist())
     total_tr    = len(y_tr)
     raw_w = [math.sqrt(total_tr / max(counts_dict.get(i, 1), 1)) for i in range(3)]
-    max_w = max(raw_w)
-    cls_weights = torch.tensor(
-        [w / max_w for w in raw_w], dtype=torch.float32).to(device)
+    raw_w[1] = min(raw_w[1], 1.0)   # cap FLAT
+    cls_weights = torch.tensor(raw_w, dtype=torch.float32).to(device)
 
     print(f'  Class counts: UP={counts_dict.get(0,0)} '
           f'FLAT={counts_dict.get(1,0)} DOWN={counts_dict.get(2,0)}')
     print(f'  Class weights: UP={cls_weights[0]:.3f} '
-          f'FLAT={cls_weights[1]:.3f} DOWN={cls_weights[2]:.3f}')
+          f'FLAT={cls_weights[1]:.3f} DOWN={cls_weights[2]:.3f}  '
+          f'(B-11: FLAT capped, UP/DOWN raised)')
 
     shared_data = {
         'device':      device,
@@ -583,11 +597,14 @@ def main():
         save_kwargs['econ_test'] = econ_test
     if len(test_dates_arr) > 0 and any(d != "" for d in test_dates_arr):
         save_kwargs['test_dates'] = test_dates_arr
+    if len(test_tickers_arr) > 0:
+        save_kwargs['test_tickers'] = test_tickers_arr
     np.savez(out_path, **save_kwargs)
     print(f'\n  📦 → {out_path}')
 
-    # Финальная проверка сохранённых данных
-    check = np.load(out_path)
+    # Финальная проверка сохранённых данных.
+    # allow_pickle=True для совместимости со старыми npz, где test_dates были object array.
+    check = np.load(out_path, allow_pickle=True)
     print(f'\n  [CHECK] ensemble_predictions.npz:')
     for k in check.files:
         arr = check[k]

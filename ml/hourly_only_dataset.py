@@ -324,8 +324,9 @@ class HourlyDataset(TorchDataset):
             x = np.concatenate([pad, x], axis=0)
 
         y    = int(labels[w_idx])
-        date = str(dates[w_idx]) if w_idx < len(dates) else ""
-        return torch.tensor(x, dtype=torch.float32), y, date
+        date = str(dates[w_idx])[:10] if w_idx < len(dates) else ""
+        # B-13: возвращаем ticker — нужно для (date, ticker) join в meta_features
+        return torch.tensor(x, dtype=torch.float32), y, date, ticker
 
 
 # ══════════════════════════════════════════════════════════════════

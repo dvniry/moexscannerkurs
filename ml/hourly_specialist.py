@@ -1,5 +1,10 @@
-"""Sprint 4: HourlySpecialist — маленькая модель для часовых баров.
+"""Sprint 4: HourlySpecialist — модель для часовых баров.
 
+v1 (2026-05-01): откат от v2 (углубление 2L×96 не дало прироста, val_acc 0.5378→0.5389
+                  при ×2.2 параметров — модель упёрлась в потолок данных, не capacity).
+  Сохранены полезные части v2:
+  - input_dropout 0.1 (random feature-mask на тренинге) — регуляризация
+  - vol_head с реальным таргетом обучается через trainer (B-3)
 Архитектура: CNN(scales=[5,10,45]) + BiLSTM(64) → dir_head + vol_head
 Параметров: ~280k (намеренно маленькая, ~8× меньше V3)
 Вход:  [B, 45, 37]  — 45 часовых баров, 37 индикаторов
@@ -20,17 +25,19 @@ class HourlySpecialist(nn.Module):
 
     def __init__(
         self,
-        n_feat:     int   = N_HOURLY_FEAT,    # 37
-        window:     int   = HOURLY_WINDOW,     # 45
-        cnn_ch:     int   = 32,
-        lstm_hid:   int   = 64,
-        proj_dim:   int   = 64,
-        dropout:    float = 0.3,
+        n_feat:        int   = N_HOURLY_FEAT,    # 37
+        window:        int   = HOURLY_WINDOW,    # 45
+        cnn_ch:        int   = 32,
+        lstm_hid:      int   = 64,
+        proj_dim:      int   = 64,
+        dropout:       float = 0.3,
+        input_dropout: float = 0.1,
     ):
         super().__init__()
-        self.n_feat   = n_feat
-        self.window   = window
-        self.lstm_hid = lstm_hid
+        self.n_feat          = n_feat
+        self.window          = window
+        self.lstm_hid        = lstm_hid
+        self.input_dropout_p = input_dropout
 
         # ── Feature projection ──────────────────────────────────
         self.proj = nn.Sequential(
@@ -62,12 +69,12 @@ class HourlySpecialist(nn.Module):
             nn.GELU(),
         )
 
-        # ── BiLSTM branch ───────────────────────────────────────
+        # ── BiLSTM branch (1 layer, hidden=64) ──────────────────
         self.lstm = nn.LSTM(
-            input_size  = proj_dim,
-            hidden_size = lstm_hid,
-            num_layers  = 1,
-            batch_first = True,
+            input_size    = proj_dim,
+            hidden_size   = lstm_hid,
+            num_layers    = 1,
+            batch_first   = True,
             bidirectional = True,
         )
         lstm_out_dim = 2 * lstm_hid   # bidirectional → concat
@@ -101,26 +108,31 @@ class HourlySpecialist(nn.Module):
         x: [B, T=45, F=37]
         Returns:
             dir_logit: [B]   — P(UP) = sigmoid(dir_logit)
-            vol_pred:  [B]   — log-vol proxy (любой масштаб)
+            vol_pred:  [B]   — realized vol proxy (mean of range_norm в окне)
         """
-        B, T, F = x.shape
+        # B-3 + v2: input dropout — random feature-mask на тренинге.
+        # Маскирует случайные feature-каналы в [0.85, 1.0] коэффициентом.
+        if self.training and self.input_dropout_p > 0.0:
+            mask = torch.empty(x.shape[0], 1, x.shape[2], device=x.device).uniform_(0.0, 1.0)
+            mask = (mask > self.input_dropout_p).float()
+            x = x * mask
 
         # Projection: [B, T, proj_dim]
         h = self.proj(x)
 
-        # ── CNN branch ──────────────────────────────────────────
-        h_t = h.transpose(1, 2)           # [B, proj_dim, T]
-        c5   = self.cnn5(h_t).squeeze(-1)     # [B, cnn_ch]
-        c10  = self.cnn10(h_t).squeeze(-1)    # [B, cnn_ch]
-        call = self.cnn_all(h_t).squeeze(-1)  # [B, cnn_ch]
+        # ── CNN branch (k=5, 10, window=45) ────────────────────
+        h_t = h.transpose(1, 2)                   # [B, proj_dim, T]
+        c5   = self.cnn5(h_t).squeeze(-1)         # [B, cnn_ch]
+        c10  = self.cnn10(h_t).squeeze(-1)        # [B, cnn_ch]
+        call = self.cnn_all(h_t).squeeze(-1)      # [B, cnn_ch]
         cnn_out = self.cnn_fusion(
-            torch.cat([c5, c10, call], dim=-1))  # [B, proj_dim]
+            torch.cat([c5, c10, call], dim=-1))   # [B, proj_dim]
 
-        # ── BiLSTM branch ───────────────────────────────────────
-        lstm_out, (h_n, _) = self.lstm(h)   # lstm_out: [B, T, 2*lstm_hid]
-        # last hidden state from both directions
-        h_fwd = h_n[0]   # [B, lstm_hid]
-        h_bwd = h_n[1]   # [B, lstm_hid]
+        # ── BiLSTM branch (1 layer) ────────────────────────────
+        lstm_out, (h_n, _) = self.lstm(h)         # h_n: [num_layers*2, B, lstm_hid]
+        # last hidden state from both directions (1 layer → h_n[0]=fwd, h_n[1]=bwd)
+        h_fwd = h_n[0]
+        h_bwd = h_n[1]
         lstm_feat = torch.cat([h_fwd, h_bwd], dim=-1)   # [B, 2*lstm_hid]
 
         # ── Fusion ───────────────────────────────────────────────

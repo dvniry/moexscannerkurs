@@ -30,12 +30,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 
-ENSEMBLE_DIR      = os.path.join(os.path.dirname(__file__), "ensemble")
-HOURLY_MODEL_PATH = os.path.join(ENSEMBLE_DIR, "hourly_specialist.pt")
-HOURLY_PRED_PATH  = os.path.join(ENSEMBLE_DIR, "hourly_val_predictions.npz")
-DAILY_PRED_PATH   = os.path.join(ENSEMBLE_DIR, "ensemble_predictions.npz")
-META_FEAT_PATH    = os.path.join(ENSEMBLE_DIR, "meta_features.npz")
-META_MODEL_PATH   = os.path.join(ENSEMBLE_DIR, "meta_learner.pt")
+ENSEMBLE_DIR        = os.path.join(os.path.dirname(__file__), "ensemble")
+HOURLY_MODEL_PATH   = os.path.join(ENSEMBLE_DIR, "hourly_specialist.pt")
+# B-12: приоритет читать hourly_all (train+val+test со split-меткой) для большего overlap
+# с V3 test_dates. Fallback на hourly_val_predictions.npz (старый формат).
+HOURLY_ALL_PATH     = os.path.join(ENSEMBLE_DIR, "hourly_all_predictions.npz")
+HOURLY_PRED_PATH    = os.path.join(ENSEMBLE_DIR, "hourly_val_predictions.npz")
+DAILY_PRED_PATH     = os.path.join(ENSEMBLE_DIR, "ensemble_predictions.npz")
+META_FEAT_PATH      = os.path.join(ENSEMBLE_DIR, "meta_features.npz")
+META_MODEL_PATH     = os.path.join(ENSEMBLE_DIR, "meta_learner.pt")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -66,6 +69,7 @@ def print_status():
     """Показывает текущее состояние всех артефактов пайплайна."""
     print("\n  Статус артефактов:")
     print(_status(HOURLY_MODEL_PATH, "hourly_specialist.pt"))
+    print(_status(HOURLY_ALL_PATH,   "hourly_all_predictions.npz (B-12)"))
     print(_status(HOURLY_PRED_PATH,  "hourly_val_predictions.npz"))
     print(_status(DAILY_PRED_PATH,   "ensemble_predictions.npz"))
     print(_status(META_FEAT_PATH,    "meta_features.npz"))
@@ -148,89 +152,209 @@ def build_meta_features() -> bool:
     print("  ЭТАП 2/3: Сборка meta-features")
     print("─" * 60)
 
-    if not os.path.exists(HOURLY_PRED_PATH):
-        print(f"  ERROR: {HOURLY_PRED_PATH} не найден.")
+    # B-12: предпочитаем hourly_all (train+val+test) для overlap с V3 test.
+    # Если его нет — fallback на val-only (старый формат).
+    if os.path.exists(HOURLY_ALL_PATH):
+        h_path = HOURLY_ALL_PATH
+        print(f"  Используем hourly_all_predictions.npz (B-12)")
+    elif os.path.exists(HOURLY_PRED_PATH):
+        h_path = HOURLY_PRED_PATH
+        print(f"  [WARN] hourly_all_predictions.npz отсутствует — используем val-only.")
+        print(f"         Перетренируйте hourly: py -m ml.trainer_hourly")
+    else:
+        print(f"  ERROR: ни {HOURLY_ALL_PATH}, ни {HOURLY_PRED_PATH} не найдены.")
         return False
     if not os.path.exists(DAILY_PRED_PATH):
         print(f"  ERROR: {DAILY_PRED_PATH} не найден.")
         return False
 
-    h = np.load(HOURLY_PRED_PATH, allow_pickle=True)
+    h = np.load(h_path, allow_pickle=True)
     h_dir_prob = h["dir_prob"].astype(np.float32)
     h_vol_pred = h["vol_pred"].astype(np.float32)
+    # Hourly y: уже бинарная {0=DOWN, 1=UP}
     h_y_true   = h["y_true"].astype(np.int8)
     h_dates    = np.array([str(d)[:10] for d in h["dates"]])
-    print(f"  Hourly: {len(h_dir_prob)} сэмплов")
+    h_tickers  = (np.array([str(t) for t in h["tickers"]])
+                  if "tickers" in h.files else
+                  np.full(len(h_dir_prob), "_unknown_", dtype="U16"))
+    h_split    = (np.array([str(s) for s in h["split"]])
+                  if "split" in h.files else
+                  np.full(len(h_dir_prob), "val", dtype="U5"))
+    if "split" in h.files:
+        cnts = {s: int((h_split == s).sum()) for s in ("train", "val", "test")}
+        print(f"  Hourly: {len(h_dir_prob)} сэмплов "
+              f"(train={cnts.get('train',0)} val={cnts.get('val',0)} test={cnts.get('test',0)})")
+    else:
+        print(f"  Hourly: {len(h_dir_prob)} сэмплов")
+    if "tickers" not in h.files:
+        print(f"  [WARN B-13] hourly npz без tickers — fallback на join по date только. "
+              f"Перетренируйте: py -m ml.trainer_hourly")
 
     d = np.load(DAILY_PRED_PATH, allow_pickle=True)
     d_dir_prob = d["dir_prob"].astype(np.float32)
     d_mfe      = d["mfe_mae_pred"][:, 0].astype(np.float32)
     d_fill     = d["fill_prob"][:, 0].astype(np.float32)
     d_edge     = d["edge_pred"][:, 0].astype(np.float32)
-    d_y        = d["y_test"].astype(np.int8)
+    # Daily y_test: 3-классная {0=UP, 1=FLAT, 2=DOWN}.
+    # B-2 фикс: бинаризуем под BCE/dir_acc → 1=UP, 0=DOWN; FLAT отфильтруем ниже.
+    d_y_raw    = d["y_test"].astype(np.int8)
+    d_y_bin    = (d_y_raw == 0).astype(np.int8)        # UP=1, иначе 0
+    d_is_flat  = (d_y_raw == 1)
+    # B-13: читаем tickers из ensemble_predictions.npz
+    d_tickers  = (np.array([str(t) for t in d["test_tickers"]])
+                  if "test_tickers" in d.files else None)
+    # Sprint 5 + MetaLearner v2: подцепляем regime tag для per-regime обучения
+    d_regime   = (d["test_regime"].astype(np.int8)
+                  if "test_regime" in d.files else
+                  np.full(len(d_dir_prob), -1, dtype=np.int8))
 
     d_dates_raw = _load_daily_dates()
     aligned     = (d_dates_raw is not None and len(d_dates_raw) == len(d_dir_prob))
+    use_ticker_key = (
+        aligned and d_tickers is not None
+        and len(d_tickers) == len(d_dir_prob)
+        and "tickers" in h.files
+    )
+    if use_ticker_key:
+        print(f"  Используем (date, ticker) join (B-13) — макс. overlap")
+    else:
+        print(f"  [WARN] Используем join только по date — overlap будет мал. "
+              f"Чтобы активировать B-13: trainer_v3_ensemble --rebuild и trainer_hourly")
 
+    merged = None
     if aligned:
         d_dates = np.array([str(x)[:10] for x in d_dates_raw])
-        print(f"  Daily:  {len(d_dir_prob)} сэмплов")
+        print(f"  Daily:  {len(d_dir_prob)} сэмплов "
+              f"(UP={int((d_y_raw==0).sum())} FLAT={int(d_is_flat.sum())} DOWN={int((d_y_raw==2).sum())})")
 
+        # B-12: при дубликатах ключа предпочитаем test > val > train —
+        # split из hourly_all даёт "чистые" предсказания на test-датах.
+        split_priority = {"test": 0, "val": 1, "train": 2}
+        h_pri = np.array([split_priority.get(str(s), 9) for s in h_split])
+
+        # B-13: ключ join — (date, ticker) при наличии тикеров с обеих сторон,
+        # иначе fallback на просто date (мало overlap, см. WARN выше).
         h_df = pd.DataFrame({
-            "date": h_dates,
-            "h_dir": h_dir_prob,
-            "h_vol": h_vol_pred,
-        }).drop_duplicates("date").set_index("date")
-
+            "date":    h_dates,
+            "ticker":  h_tickers,
+            "h_dir":   h_dir_prob,
+            "h_vol":   h_vol_pred,
+            "h_split": h_split,
+            "_pri":    h_pri,
+        })
         d_df = pd.DataFrame({
-            "date":   d_dates,
-            "d_dir":  d_dir_prob,
-            "d_mfe":  d_mfe,
-            "d_fill": d_fill,
-            "d_edge": d_edge,
-            "y":      d_y,
-        }).drop_duplicates("date").set_index("date")
+            "date":    d_dates,
+            "ticker":  d_tickers if use_ticker_key else np.full(len(d_dates), "_unknown_", dtype="U16"),
+            "d_dir":   d_dir_prob,
+            "d_mfe":   d_mfe,
+            "d_fill":  d_fill,
+            "d_edge":  d_edge,
+            "y":       d_y_bin,
+            "is_flat": d_is_flat,
+            "regime":  d_regime,    # MetaLearner v2: 0=bear, 1=side, 2=bull, -1=unknown
+        })
 
-        merged = h_df.join(d_df, how="inner")
+        key_cols = ["date", "ticker"] if use_ticker_key else ["date"]
+        h_df = (h_df.sort_values(key_cols + ["_pri"])
+                    .drop_duplicates(key_cols, keep="first")
+                    .drop(columns=["_pri"]))
+        d_df = d_df.drop_duplicates(key_cols, keep="first")
+
+        merged = h_df.merge(d_df, on=key_cols, how="inner")
+        # B-4 фикс: явная сортировка по дате (тикер вторичен) — pandas merge не гарантирует
+        # порядок, без сортировки последующий X[:n_tr]/X[n_tr:] split смешает train/val.
+        merged = merged.sort_values(key_cols).reset_index(drop=True)
+        # Отфильтровать FLAT — они шум для бинарной задачи UP-vs-DOWN
+        n_before = len(merged)
+        merged = merged[~merged["is_flat"].astype(bool)].reset_index(drop=True)
         n_aligned = len(merged)
-        print(f"  После выравнивания: {n_aligned} сэмплов")
+        n_uniq_dates  = merged["date"].nunique()
+        n_uniq_ticks  = merged["ticker"].nunique() if use_ticker_key else 0
+        print(f"  После выравнивания: {n_aligned} сэмплов "
+              f"(отфильтровано FLAT: {n_before - n_aligned}; "
+              f"уникальных дат: {n_uniq_dates}"
+              + (f", тикеров: {n_uniq_ticks}" if use_ticker_key else "")
+              + ")")
     else:
         n_aligned = 0
 
-    if n_aligned >= 50:
-        h_dir  = merged["h_dir"].values.astype(np.float32)
-        h_vol  = merged["h_vol"].values.astype(np.float32)
-        d_dir  = merged["d_dir"].values.astype(np.float32)
-        X = np.stack([
-            h_dir,
-            np.tanh(h_vol),
-            np.abs(h_dir - 0.5) * 2,
-            d_dir,
-            np.clip(merged["d_edge"].values.astype(np.float32) * 100, -5, 5),
-            np.clip(merged["d_mfe"].values.astype(np.float32)  * 100,  0, 5),
-            merged["d_fill"].values.astype(np.float32),
-        ], axis=-1)
-        y         = merged["y"].values.astype(np.int8)
-        dates_out = np.array(merged.index, dtype=object)
-        print(f"  Режим: полное выравнивание (7 features, N={n_aligned})")
-    else:
-        # Fallback: только hourly features
-        print("  [WARN] Дневные даты недоступны → только hourly features (4 из 7)")
-        X = np.stack([
-            h_dir_prob,
-            np.tanh(h_vol_pred),
-            np.abs(h_dir_prob - 0.5) * 2,
-            h_dir_prob,
-            np.zeros_like(h_dir_prob),
-            np.zeros_like(h_dir_prob),
-            np.zeros_like(h_dir_prob),
-        ], axis=-1)
-        y         = h_y_true
-        dates_out = h_dates
+    # MetaLearner v2 формат X (14 features):
+    #   X[:, 0]  = h_dir_prob
+    #   X[:, 1]  = tanh(h_vol_pred)
+    #   X[:, 2]  = |h_dir - 0.5| * 2           # confidence
+    #   X[:, 3]  = d_dir_prob
+    #   X[:, 4]  = clip(d_edge * 100, -5, 5)
+    #   X[:, 5]  = clip(d_mfe  * 100,  0, 5)
+    #   X[:, 6]  = d_fill_long_prob
+    #   X[:, 7]  = h_dir × d_dir              # both UP confidence
+    #   X[:, 8]  = (1-h_dir) × (1-d_dir)      # both DOWN confidence
+    #   X[:, 9]  = |h_dir - d_dir|            # disagreement magnitude
+    #   X[:, 10] = sign agreement bit         # 1 if both > 0.5 or both < 0.5
+    #   X[:, 11] = is_bear (one-hot)
+    #   X[:, 12] = is_side
+    #   X[:, 13] = is_bull
+    META_FEAT_DIM = 14
+    if n_aligned >= 50 and merged is not None:
+        h_dir   = merged["h_dir"].values.astype(np.float32)
+        h_vol   = merged["h_vol"].values.astype(np.float32)
+        d_dir   = merged["d_dir"].values.astype(np.float32)
+        d_edge  = np.clip(merged["d_edge"].values.astype(np.float32) * 100, -5, 5)
+        d_mfe   = np.clip(merged["d_mfe"].values.astype(np.float32)  * 100,  0, 5)
+        d_fill  = merged["d_fill"].values.astype(np.float32)
 
-    print(f"  X.shape={X.shape}  y.shape={y.shape}")
+        # interaction features
+        agree_up   = h_dir * d_dir
+        agree_dn   = (1.0 - h_dir) * (1.0 - d_dir)
+        disagree   = np.abs(h_dir - d_dir)
+        sign_agree = ((h_dir > 0.5) == (d_dir > 0.5)).astype(np.float32)
+
+        # regime one-hot (-1/unknown → all zeros)
+        reg = merged["regime"].values.astype(np.int8) if "regime" in merged.columns \
+              else np.full(len(h_dir), -1, dtype=np.int8)
+        is_bear = (reg == 0).astype(np.float32)
+        is_side = (reg == 1).astype(np.float32)
+        is_bull = (reg == 2).astype(np.float32)
+
+        X = np.stack([
+            h_dir, np.tanh(h_vol), np.abs(h_dir - 0.5) * 2,
+            d_dir, d_edge, d_mfe, d_fill,
+            agree_up, agree_dn, disagree, sign_agree,
+            is_bear, is_side, is_bull,
+        ], axis=-1)
+
+        y          = merged["y"].values.astype(np.int8)
+        dates_out  = merged["date"].values.astype("U10")
+        tickers_out = (merged["ticker"].values.astype("U16")
+                       if "ticker" in merged.columns else
+                       np.full(n_aligned, "_unknown_", dtype="U16"))
+        h_split_out = (merged["h_split"].values.astype("U5")
+                       if "h_split" in merged.columns else
+                       np.full(n_aligned, "val", dtype="U5"))
+        cnts = {s: int((h_split_out == s).sum()) for s in ("train", "val", "test")}
+        n_known_regime = int((reg >= 0).sum())
+        print(f"  Режим: полное выравнивание (v2: {META_FEAT_DIM} features, N={n_aligned}) "
+              f"UP={int(y.sum())} DOWN={int((1 - y).sum())}  "
+              f"split: train={cnts.get('train',0)} val={cnts.get('val',0)} test={cnts.get('test',0)}")
+        print(f"  Regime coverage: bear={int(is_bear.sum())} side={int(is_side.sum())} "
+              f"bull={int(is_bull.sum())} unknown={n_aligned - n_known_regime}")
+    else:
+        # Fallback: только hourly features. h_y_true уже бинарная.
+        print("  [WARN] Дневные даты недоступны → только hourly features (degenerate v2)")
+        zero = np.zeros_like(h_dir_prob)
+        X = np.stack([
+            h_dir_prob, np.tanh(h_vol_pred), np.abs(h_dir_prob - 0.5) * 2,
+            h_dir_prob, zero, zero, zero,
+            zero, zero, zero, zero,   # interactions = 0 без daily
+            zero, zero, zero,          # regime = unknown
+        ], axis=-1)
+        y           = h_y_true
+        dates_out   = h_dates.astype("U10")
+        tickers_out = h_tickers.astype("U16")
+        h_split_out = h_split.astype("U5")
+
+    print(f"  X.shape={X.shape}  y.shape={y.shape}  unique(y)={np.unique(y).tolist()}")
     os.makedirs(ENSEMBLE_DIR, exist_ok=True)
-    np.savez(META_FEAT_PATH, X=X, y=y, dates=dates_out)
+    np.savez(META_FEAT_PATH, X=X, y=y, dates=dates_out, tickers=tickers_out, h_split=h_split_out)
     print(f"  Сохранено: {META_FEAT_PATH}")
     return True
 
@@ -240,17 +364,23 @@ def build_meta_features() -> bool:
 # ══════════════════════════════════════════════════════════════════
 
 class MetaLearner(nn.Module):
-    """Tiny MLP 7 → 32 → 16 → 1."""
+    """MetaLearner v2: 14 → 64 → 32 → 1 с LayerNorm.
 
-    def __init__(self, n_feat: int = 7, hidden: int = 32):
+    v1: 7 → 32 → 16 → 1 (loss train не падал, val_acc=0.5256 < DailySpec 0.5340)
+    v2: добавлены 4 interaction features + 3 regime one-hot, LayerNorm для стабильности.
+    """
+
+    def __init__(self, n_feat: int = 14, hidden: int = 64):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_feat, hidden),
+            nn.LayerNorm(hidden),
             nn.GELU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.25),
             nn.Linear(hidden, hidden // 2),
+            nn.LayerNorm(hidden // 2),
             nn.GELU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.15),
             nn.Linear(hidden // 2, 1),
         )
         for m in self.modules():
@@ -262,36 +392,100 @@ class MetaLearner(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-def train_meta(epochs: int = 100, lr: float = 1e-3, seed: int = 42) -> float:
-    """Шаг 3: обучает MetaLearner."""
+def train_meta(epochs: int = 150, lr: float = 3e-3, seed: int = 42,
+               holdout_only: bool = False) -> float:
+    """Шаг 3: обучает MetaLearner.
+
+    y бинарный: 1=UP, 0=DOWN (бинаризовано в build_meta_features).
+    Split — temporal: первые 60% по дате — train, последние 40% — val.
+
+    holdout_only: если True — фильтруем meta-features до h_split=='test'
+        (только сэмплы, на которых HourlySpec НЕ обучался). Даёт честную
+        upper-bound оценку без оптимизма из train/val-предсказаний.
+    """
     print("\n" + "─" * 60)
-    print("  ЭТАП 3/3: Обучение MetaLearner")
+    print("  ЭТАП 3/3: Обучение MetaLearner"
+          + ("  [HOLDOUT-ONLY]" if holdout_only else ""))
     print("─" * 60)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     data  = np.load(META_FEAT_PATH, allow_pickle=True)
-    X     = torch.tensor(data["X"], dtype=torch.float32)
-    y     = torch.tensor(data["y"], dtype=torch.float32)
+
+    X_full = data["X"]
+    y_full = data["y"]
+
+    # holdout-only: оставляем только hourly test-предсказания
+    if holdout_only:
+        if "h_split" in data.files:
+            mask = (data["h_split"] == "test")
+            X_full = X_full[mask]
+            y_full = y_full[mask]
+            print(f"  holdout_only: {int(mask.sum())} сэмплов из {len(mask)} (h_split=='test')")
+        else:
+            print(f"  [WARN] h_split отсутствует в meta_features.npz — игнорируем holdout_only")
+
+    # B-4: гарантируем сортировку по дате перед split (на случай если меta_features
+    # был записан без sort_index, или dates изменились).
+    dates_arr = data["dates"] if "dates" in data.files else None
+    if holdout_only and "h_split" in data.files:
+        dates_arr = dates_arr[data["h_split"] == "test"]
+    if dates_arr is not None and len(dates_arr) == len(X_full):
+        order = np.argsort(np.array([str(d) for d in dates_arr]))
+        X_np  = X_full[order]
+        y_np  = y_full[order]
+    else:
+        X_np  = X_full
+        y_np  = y_full
+
+    # B-2: y должна быть бинарной {0,1}. Проверяем и при необходимости падаем явно.
+    uniq = np.unique(y_np)
+    assert set(uniq.tolist()).issubset({0, 1}), \
+        f"[BUG B-2] meta y должна быть бинарной {{0,1}}, получено {uniq.tolist()}. " \
+        f"Запустите: python -m ml.meta_ensemble --rebuild meta"
+
+    X     = torch.tensor(X_np, dtype=torch.float32)
+    y     = torch.tensor(y_np, dtype=torch.float32)
     n     = len(X)
     n_tr  = int(n * 0.6)
     X_tr, X_va = X[:n_tr], X[n_tr:]
     y_tr, y_va = y[:n_tr], y[n_tr:]
 
-    n_up = int(y_tr.sum()); n_dn = n_tr - n_up
+    # Корректный подсчёт UP/DOWN на бинарной y
+    n_up = int(y_tr.sum().item())
+    n_dn = int(n_tr - n_up)
     pos_w = torch.tensor(n_dn / max(n_up, 1)).clamp(0.5, 3.0)
     print(f"  train={n_tr} val={n - n_tr}  UP={n_up} DOWN={n_dn}  pos_w={pos_w.item():.2f}")
 
-    model = MetaLearner()
-    opt   = AdamW(model.parameters(), lr=lr, weight_decay=1e-3)
+    n_feat = X.shape[1]
+    model = MetaLearner(n_feat=n_feat, hidden=64)
+    opt   = AdamW(model.parameters(), lr=lr, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=lr * 0.05)
     best_val_acc = 0.0
+    patience_cnt = 0
+    patience_max = 30
+
+    # Mini-batch training (вместо full-batch GD который застревал на underfit)
+    batch_size = 256
+    n_batches = max(1, (n_tr + batch_size - 1) // batch_size)
+    print(f"  MetaLearner v2: n_feat={n_feat}  hidden=64  "
+          f"lr={lr}  wd=5e-4  batch={batch_size} ({n_batches} batches/epoch)")
 
     for ep in range(1, epochs + 1):
         model.train()
-        logit = model(X_tr)
-        loss  = F.binary_cross_entropy_with_logits(logit, y_tr, pos_weight=pos_w)
-        opt.zero_grad(); loss.backward(); opt.step()
+        # shuffle inside epoch
+        perm = torch.randperm(n_tr)
+        ep_loss = 0.0
+        for bi in range(n_batches):
+            idx = perm[bi * batch_size: (bi + 1) * batch_size]
+            xb, yb = X_tr[idx], y_tr[idx]
+            logit = model(xb)
+            loss  = F.binary_cross_entropy_with_logits(logit, yb, pos_weight=pos_w)
+            opt.zero_grad(); loss.backward(); opt.step()
+            ep_loss += loss.item() * len(idx)
+        ep_loss /= max(n_tr, 1)
+        scheduler.step()
 
         if ep % 10 == 0 or ep == epochs:
             model.eval()
@@ -299,11 +493,19 @@ def train_meta(epochs: int = 100, lr: float = 1e-3, seed: int = 42) -> float:
                 v_logit = model(X_va)
                 v_acc   = ((v_logit >= 0).long() == y_va.long()).float().mean().item()
                 v_loss  = F.binary_cross_entropy_with_logits(v_logit, y_va).item()
-            print(f"  E{ep:03d}  loss={loss.item():.4f}  val_acc={v_acc:.4f}  val_loss={v_loss:.4f}")
+            cur_lr = opt.param_groups[0]['lr']
+            print(f"  E{ep:03d}  loss={ep_loss:.4f}  val_acc={v_acc:.4f}  "
+                  f"val_loss={v_loss:.4f}  lr={cur_lr:.5f}")
             if v_acc > best_val_acc:
                 best_val_acc = v_acc
+                patience_cnt = 0
                 os.makedirs(ENSEMBLE_DIR, exist_ok=True)
                 torch.save(model.state_dict(), META_MODEL_PATH)
+            else:
+                patience_cnt += 10
+                if patience_cnt >= patience_max:
+                    print(f"  Early stop on E{ep:03d} (no val improvement {patience_max} epochs)")
+                    break
 
     print(f"\n  Best val_acc: {best_val_acc:.4f}  → {META_MODEL_PATH}")
     return best_val_acc
@@ -313,29 +515,53 @@ def train_meta(epochs: int = 100, lr: float = 1e-3, seed: int = 42) -> float:
 # Оценка
 # ══════════════════════════════════════════════════════════════════
 
-def evaluate_meta():
-    """Оценивает MetaEnsemble vs специалисты."""
+def evaluate_meta(holdout_only: bool = False):
+    """Оценивает MetaEnsemble vs специалисты.
+
+    Все метрики в бинарной задаче UP-vs-DOWN: y∈{0,1}, predict = (logit≥0).
+    holdout_only: фильтрует до h_split=='test' для честной оценки.
+    """
     for path in [META_FEAT_PATH, META_MODEL_PATH]:
         if not os.path.exists(path):
             print(f"  Файл не найден: {path}"); return
 
     data = np.load(META_FEAT_PATH, allow_pickle=True)
-    X    = torch.tensor(data["X"], dtype=torch.float32)
-    y    = data["y"].astype(np.int64)
+    X_np = data["X"]
+    y_np = data["y"].astype(np.int64)
+    if holdout_only and "h_split" in data.files:
+        mask = (data["h_split"] == "test")
+        X_np = X_np[mask]
+        y_np = y_np[mask]
+        print(f"  [holdout_only] {int(mask.sum())} сэмплов из {len(mask)}")
+    X    = torch.tensor(X_np, dtype=torch.float32)
+    y    = torch.tensor(y_np, dtype=torch.long)
 
-    model = MetaLearner()
+    # B-2: страховка от старых meta_features.npz, где y ∈ {0,1,2}
+    uniq = np.unique(y_np)
+    if not set(uniq.tolist()).issubset({0, 1}):
+        print(f"  [WARN B-2] meta y={uniq.tolist()} — не бинарная. "
+              f"Перестройте: python -m ml.meta_ensemble --rebuild meta")
+        return
+
+    model = MetaLearner(n_feat=X.shape[1], hidden=64)
     model.load_state_dict(torch.load(META_MODEL_PATH, map_location="cpu", weights_only=True))
     model.eval()
     with torch.no_grad():
         meta_logit = model(X)
 
-    meta_acc = float(((meta_logit >= 0).long() == torch.tensor(y)).float().mean())
-    h_acc    = float(((X[:, 0] >= 0.5).long() == torch.tensor(y)).float().mean())
-    d_acc    = float(((X[:, 3] >= 0.5).long() == torch.tensor(y)).float().mean())
-    baseline = max(float((y == 1).mean()), float((y == 0).mean()))
+    meta_pred = (meta_logit >= 0).long()
+    h_pred    = (X[:, 0] >= 0.5).long()
+    d_pred    = (X[:, 3] >= 0.5).long()
+
+    meta_acc = float((meta_pred == y).float().mean())
+    h_acc    = float((h_pred    == y).float().mean())
+    d_acc    = float((d_pred    == y).float().mean())
+    # Baseline always-UP / always-DOWN — лучший из двух «тривиальных» классификаторов
+    baseline = max(float((y_np == 1).mean()), float((y_np == 0).mean()))
 
     print(f"\n{'═'*50}")
-    print(f"  MetaEnsemble Evaluation  N={len(y)}")
+    print(f"  MetaEnsemble Evaluation  N={len(y_np)}  "
+          f"(UP={int(y_np.sum())} DOWN={int((1 - y_np).sum())})")
     print(f"{'═'*50}")
     print(f"  Baseline (majority):   {baseline:.4f}")
     print(f"  HourlySpecialist:      {h_acc:.4f}")
@@ -344,7 +570,7 @@ def evaluate_meta():
     print(f"{'═'*50}")
     winner = "MetaEnsemble" if meta_acc >= max(h_acc, d_acc) else f"лучший = {max(h_acc, d_acc):.4f}"
     print(f"  {'✓ ' if meta_acc >= max(h_acc, d_acc) else '✗ '}{winner}")
-    agree = float(((X[:, 0] >= 0.5) == (X[:, 3] >= 0.5)).float().mean())
+    agree = float((h_pred == d_pred).float().mean())
     print(f"  Pairwise H↔D agreement: {agree:.4f}  (меньше → больший ансамблевый gain)")
 
 
@@ -358,6 +584,7 @@ def run_pipeline(
     tickers:       list | None = None,
     rebuild:       str  = "",   # "hourly" | "meta" | "all" | ""
     eval_only:     bool = False,
+    holdout_only:  bool = False,
 ):
     """
     Авто-пайплайн: проверяет зависимости и запускает только нужные этапы.
@@ -375,7 +602,7 @@ def run_pipeline(
     print_status()
 
     if eval_only:
-        evaluate_meta()
+        evaluate_meta(holdout_only=holdout_only)
         return
 
     force_hourly = rebuild in ("hourly", "all")
@@ -386,6 +613,7 @@ def run_pipeline(
         force_hourly
         or not _is_fresh(HOURLY_MODEL_PATH)
         or not _is_fresh(HOURLY_PRED_PATH, HOURLY_MODEL_PATH)
+        or not os.path.exists(HOURLY_ALL_PATH)   # B-12
     )
     if need_hourly:
         _run_hourly_training(
@@ -400,7 +628,7 @@ def run_pipeline(
     # ── Этап 2: Meta-features ─────────────────────────────────────
     need_features = (
         force_meta
-        or not _is_fresh(META_FEAT_PATH, HOURLY_PRED_PATH, DAILY_PRED_PATH)
+        or not _is_fresh(META_FEAT_PATH, HOURLY_PRED_PATH, DAILY_PRED_PATH, HOURLY_ALL_PATH)
     )
     if need_features:
         ok = build_meta_features()
@@ -418,12 +646,12 @@ def run_pipeline(
         or not _is_fresh(META_MODEL_PATH, META_FEAT_PATH)
     )
     if need_meta:
-        train_meta(epochs=epochs_meta)
+        train_meta(epochs=epochs_meta, holdout_only=holdout_only)
     else:
         print("  ЭТАП 3/3: meta_learner.pt — актуален, пропускаем")
 
     # ── Оценка ────────────────────────────────────────────────────
-    evaluate_meta()
+    evaluate_meta(holdout_only=holdout_only)
     print()
     print_status()
 
@@ -449,8 +677,9 @@ class MetaEnsembleInference:
         return model
 
     def _load_meta_model(self):
-        model = MetaLearner()
-        model.load_state_dict(torch.load(META_MODEL_PATH, map_location="cpu", weights_only=True))
+        model = MetaLearner().to(self.device)
+        model.load_state_dict(
+            torch.load(META_MODEL_PATH, map_location=self.device, weights_only=True))
         model.eval()
         return model
 
@@ -462,6 +691,7 @@ class MetaEnsembleInference:
         d_edge:     float,
         d_mfe:      float,
         d_fill:     float,
+        regime:     int = -1,     # MetaLearner v2: 0=bear, 1=side, 2=bull, -1=unknown
     ) -> dict:
         if self._h_model is None:
             self._h_model = self._load_hourly_model()
@@ -473,15 +703,24 @@ class MetaEnsembleInference:
         h_dir = float(torch.sigmoid(h_out["dir_logit"]).item())
         h_vol = float(h_out["vol_pred"].item())
 
+        # MetaLearner v2: 14 features (см. build_meta_features документацию)
+        d_dir_v   = float(d_dir_prob)
+        d_edge_v  = float(np.clip(d_edge * 100, -5, 5))
+        d_mfe_v   = float(np.clip(d_mfe  * 100,  0, 5))
+        d_fill_v  = float(d_fill)
         feat = torch.tensor([[
             h_dir,
             float(np.tanh(h_vol)),
             abs(h_dir - 0.5) * 2,
-            float(d_dir_prob),
-            float(np.clip(d_edge * 100, -5, 5)),
-            float(np.clip(d_mfe  * 100,  0, 5)),
-            float(d_fill),
-        ]], dtype=torch.float32)
+            d_dir_v, d_edge_v, d_mfe_v, d_fill_v,
+            h_dir * d_dir_v,                            # agree_up
+            (1.0 - h_dir) * (1.0 - d_dir_v),            # agree_dn
+            abs(h_dir - d_dir_v),                       # disagree
+            float((h_dir > 0.5) == (d_dir_v > 0.5)),    # sign_agree
+            float(regime == 0),                         # is_bear
+            float(regime == 1),                         # is_side
+            float(regime == 2),                         # is_bull
+        ]], dtype=torch.float32).to(self.device)
 
         meta_logit = self._m_model(feat).item()
         meta_prob  = float(torch.sigmoid(torch.tensor(meta_logit)).item())
@@ -517,6 +756,8 @@ if __name__ == "__main__":
                         help="Что пересобрать (hourly/meta/all, по умолчанию all)")
     parser.add_argument("--eval-only",     action="store_true",
                         help="Только оценка — не обучать ничего")
+    parser.add_argument("--holdout-only",  action="store_true",
+                        help="Использовать только сэмплы где h_split=='test' (B-13: чистый holdout)")
     parser.add_argument("--smoke",         action="store_true",
                         help="Быстрый тест: 3 тикера, 3 эпохи hourly, 10 эпох meta")
     parser.add_argument("--epochs-hourly", type=int,   default=30)
@@ -536,4 +777,5 @@ if __name__ == "__main__":
         tickers       = args.tickers,
         rebuild       = args.rebuild or "",
         eval_only     = args.eval_only,
+        holdout_only  = args.holdout_only,
     )

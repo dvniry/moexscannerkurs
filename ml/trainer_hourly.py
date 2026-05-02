@@ -33,10 +33,25 @@ from torch.utils.data import DataLoader, Subset
 
 from ml.hourly_only_dataset import HourlyDataset, temporal_split, HOURLY_WINDOW, N_HOURLY_FEAT
 from ml.hourly_specialist import build_hourly_specialist
+from ml.dataset_v3 import INDICATOR_COLS
 
-ENSEMBLE_DIR = os.path.join(os.path.dirname(__file__), "ensemble")
-MODEL_PATH   = os.path.join(ENSEMBLE_DIR, "hourly_specialist.pt")
-PRED_PATH    = os.path.join(ENSEMBLE_DIR, "hourly_val_predictions.npz")
+# B-3: индекс канала, используемого как realized-vol proxy.
+# range_norm = (high - low) / close — уже нормализован, доступен в признаках
+# (не требует rebuild кэша).
+VOL_TARGET_IDX = INDICATOR_COLS.index("range_norm")
+VOL_LOSS_WEIGHT = 0.1
+
+ENSEMBLE_DIR    = os.path.join(os.path.dirname(__file__), "ensemble")
+MODEL_PATH      = os.path.join(ENSEMBLE_DIR, "hourly_specialist.pt")
+# B-9: раздельные npz для val и test (внутренний отчёт HourlySpecialist).
+PRED_PATH       = os.path.join(ENSEMBLE_DIR, "hourly_val_predictions.npz")
+PRED_TEST_PATH  = os.path.join(ENSEMBLE_DIR, "hourly_test_predictions.npz")
+# B-12: полный набор предсказаний (train+val+test) с метками split — для MetaLearner.
+# Hourly и V3 имеют разные temporal-split → их test-наборы почти не пересекаются.
+# Чтобы MetaLearner получил достаточно сэмплов, прогоняем HourlySpecialist на ВСЕХ датах
+# и используем split-флаг для контроля лика. Hourly target (next-day) ортогонален
+# V3 target (3-class 5d), поэтому даже train-предсказания дают полезный сигнал.
+PRED_ALL_PATH   = os.path.join(ENSEMBLE_DIR, "hourly_all_predictions.npz")
 
 
 def set_seed(seed: int):
@@ -48,58 +63,66 @@ def set_seed(seed: int):
 
 
 def _collate(batch):
-    """DataLoader collate: игнорирует date-строки."""
-    xs, ys, dates = zip(*batch)
+    """DataLoader collate: игнорирует date- и ticker-строки."""
+    xs, ys, dates, tickers = zip(*batch)
     return (
         torch.stack(xs),
         torch.tensor(ys, dtype=torch.long),
         list(dates),
+        list(tickers),
     )
 
 
 @torch.no_grad()
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> dict:
     model.eval()
-    all_dir_logits, all_ys = [], []
-    for x, y, _ in loader:
+    all_dir_logits, all_ys, all_vol_pred, all_vol_tgt = [], [], [], []
+    for x, y, _dates, _tickers in loader:
         x, y = x.to(device), y.to(device)
         out = model(x)
         all_dir_logits.append(out["dir_logit"])
         all_ys.append(y)
+        all_vol_pred.append(out["vol_pred"])
+        all_vol_tgt.append(x[:, :, VOL_TARGET_IDX].mean(dim=1))
     all_dir_logits = torch.cat(all_dir_logits)
     all_ys         = torch.cat(all_ys)
+    all_vol_pred   = torch.cat(all_vol_pred)
+    all_vol_tgt    = torch.cat(all_vol_tgt)
 
     dir_prob = torch.sigmoid(all_dir_logits)
     pred     = (dir_prob >= 0.5).long()
     acc      = float((pred == all_ys).float().mean())
     loss     = float(F.binary_cross_entropy_with_logits(
         all_dir_logits, all_ys.float()))
+    vol_mse  = float(F.mse_loss(all_vol_pred, all_vol_tgt))
 
-    return {"dir_acc": acc, "loss": loss}
+    return {"dir_acc": acc, "loss": loss, "vol_mse": vol_mse}
 
 
 @torch.no_grad()
 def predict_proba(model: nn.Module, loader: DataLoader, device: torch.device) -> dict:
-    """Собирает dir_prob, vol_pred, y_true, dates для сохранения."""
+    """Собирает dir_prob, vol_pred, y_true, dates, tickers (B-13) для сохранения."""
     model.eval()
-    all_prob, all_vol, all_y, all_dates = [], [], [], []
-    for x, y, dates in loader:
+    all_prob, all_vol, all_y, all_dates, all_tickers = [], [], [], [], []
+    for x, y, dates, tickers in loader:
         x = x.to(device)
         out = model(x)
         all_prob.append(torch.sigmoid(out["dir_logit"]).cpu().numpy())
         all_vol.append(out["vol_pred"].cpu().numpy())
         all_y.append(y.numpy())
         all_dates.extend(dates)
+        all_tickers.extend(tickers)
     return {
         "dir_prob": np.concatenate(all_prob),
         "vol_pred": np.concatenate(all_vol),
         "y_true":   np.concatenate(all_y),
-        "dates":    np.array(all_dates, dtype=object),
+        "dates":    np.array(all_dates, dtype="U10"),
+        "tickers":  np.array(all_tickers, dtype="U16"),
     }
 
 
 def train(
-    epochs:     int   = 30,
+    epochs:     int   = 30,             # откат v2→v1: углубление не дало прироста
     lr:         float = 3e-4,
     batch_size: int   = 256,
     seed:       int   = 42,
@@ -163,11 +186,16 @@ def train(
         ep_total   = 0
         t0 = time.time()
 
-        for x, y, _ in tr_loader:
+        for x, y, _dates, _tickers in tr_loader:
             x, y = x.to(device), y.float().to(device)
             out  = model(x)
-            loss = F.binary_cross_entropy_with_logits(
+
+            dir_loss = F.binary_cross_entropy_with_logits(
                 out["dir_logit"], y, pos_weight=pos_weight)
+            # B-3: vol_target = средний range_norm по окну (proxy для realized vol).
+            vol_target = x[:, :, VOL_TARGET_IDX].mean(dim=1).detach()
+            vol_loss   = F.mse_loss(out["vol_pred"], vol_target)
+            loss       = dir_loss + VOL_LOSS_WEIGHT * vol_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -187,7 +215,8 @@ def train(
         elapsed = time.time() - t0
         print(f"  E{epoch:02d}/{epochs}  "
               f"tr_loss={ep_loss:.4f}  tr_acc={tr_acc:.4f}  "
-              f"val_acc={val_acc:.4f}  ({elapsed:.1f}s)")
+              f"val_acc={val_acc:.4f}  vol_mse={va_met['vol_mse']:.5f}  "
+              f"({elapsed:.1f}s)")
 
         history.append({"epoch": epoch, "tr_acc": tr_acc, "val_acc": val_acc})
 
@@ -217,27 +246,62 @@ def train(
     print(f"  Val  best_acc: {best_val_acc:.4f}")
     print(f"  Baseline (always-UP): {always_up_acc:.4f}")
 
-    # ── Сохранить predictions на val+test для MetaLearner ─────────
+    # ── B-9 + B-12: раздельные val/test + полный набор для MetaLearner ──
     val_preds  = predict_proba(model, va_loader,  device)
     test_preds = predict_proba(model, te_loader, device)
-
-    # Объединяем val+test
-    dir_prob  = np.concatenate([val_preds["dir_prob"],  test_preds["dir_prob"]])
-    vol_pred  = np.concatenate([val_preds["vol_pred"],  test_preds["vol_pred"]])
-    y_true    = np.concatenate([val_preds["y_true"],    test_preds["y_true"]])
-    dates_out = np.concatenate([val_preds["dates"],     test_preds["dates"]])
+    train_preds = predict_proba(model, tr_loader, device)
 
     np.savez(
         PRED_PATH,
-        dir_prob  = dir_prob.astype(np.float32),
-        vol_pred  = vol_pred.astype(np.float32),
-        y_true    = y_true.astype(np.int8),
-        dates     = dates_out,
+        dir_prob  = val_preds["dir_prob"].astype(np.float32),
+        vol_pred  = val_preds["vol_pred"].astype(np.float32),
+        y_true    = val_preds["y_true"].astype(np.int8),
+        dates     = val_preds["dates"],
+        tickers   = val_preds["tickers"],
         val_acc   = np.array(best_val_acc),
-        test_acc  = np.array(te_met["dir_acc"]),
+        split     = np.array("val"),
     )
-    print(f"\n  Predictions saved: {PRED_PATH}")
-    print(f"  val+test сэмплов: {len(dir_prob)}")
+    np.savez(
+        PRED_TEST_PATH,
+        dir_prob  = test_preds["dir_prob"].astype(np.float32),
+        vol_pred  = test_preds["vol_pred"].astype(np.float32),
+        y_true    = test_preds["y_true"].astype(np.int8),
+        dates     = test_preds["dates"],
+        tickers   = test_preds["tickers"],
+        test_acc  = np.array(te_met["dir_acc"]),
+        split     = np.array("test"),
+    )
+
+    # B-12: полный датасет с метками split. MetaLearner может фильтровать
+    # train-сэмплы при необходимости (split != 'train'), но по умолчанию
+    # использует все, чтобы максимизировать пересечение с V3 test_dates.
+    # B-13: добавлен tickers для (date, ticker) join в meta_features.
+    all_dir     = np.concatenate([train_preds["dir_prob"], val_preds["dir_prob"], test_preds["dir_prob"]])
+    all_vol     = np.concatenate([train_preds["vol_pred"], val_preds["vol_pred"], test_preds["vol_pred"]])
+    all_y       = np.concatenate([train_preds["y_true"],   val_preds["y_true"],   test_preds["y_true"]])
+    all_dates   = np.concatenate([train_preds["dates"],    val_preds["dates"],    test_preds["dates"]])
+    all_tickers = np.concatenate([train_preds["tickers"],  val_preds["tickers"],  test_preds["tickers"]])
+    all_split = np.concatenate([
+        np.full(len(train_preds["dir_prob"]), "train", dtype="U5"),
+        np.full(len(val_preds["dir_prob"]),   "val",   dtype="U5"),
+        np.full(len(test_preds["dir_prob"]),  "test",  dtype="U5"),
+    ])
+    np.savez(
+        PRED_ALL_PATH,
+        dir_prob = all_dir.astype(np.float32),
+        vol_pred = all_vol.astype(np.float32),
+        y_true   = all_y.astype(np.int8),
+        dates    = all_dates,
+        tickers  = all_tickers,
+        split    = all_split,
+        val_acc  = np.array(best_val_acc),
+        test_acc = np.array(te_met["dir_acc"]),
+    )
+
+    print(f"\n  Val  predictions: {PRED_PATH}  (N={len(val_preds['dir_prob'])})")
+    print(f"  Test predictions: {PRED_TEST_PATH}  (N={len(test_preds['dir_prob'])})")
+    print(f"  All  predictions: {PRED_ALL_PATH}  (N={len(all_dir)} = "
+          f"{len(train_preds['dir_prob'])}+{len(val_preds['dir_prob'])}+{len(test_preds['dir_prob'])})")
 
     return best_val_acc, te_met["dir_acc"]
 

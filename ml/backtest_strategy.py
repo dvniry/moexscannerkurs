@@ -283,6 +283,7 @@ def simulate_decision_strategy(
     trades = []
     n_long_signals = n_long_filled = 0
     n_short_signals = n_short_filled = 0
+    n_dropped_oversize = 0   # B-6: счётчик молча отброшенных сделок |pnl|>5%
 
     for t in range(len(decision_signal)):
         sig = int(decision_signal[t])
@@ -369,6 +370,9 @@ def simulate_decision_strategy(
         net_pnl_pct = gross - 2 * fee
         pnl_capital = net_pnl_pct * position_size
         if abs(pnl_capital) > 0.05:
+            # Аномально крупный PnL (>5% капитала) — типично гэп / стейл цена.
+            # Отбрасываем, но считаем для диагностики (B-6).
+            n_dropped_oversize += 1
             continue
 
         trades.append({
@@ -389,7 +393,12 @@ def simulate_decision_strategy(
         'short_fill_rate': n_short_filled / max(n_short_signals, 1),
         'n_signals_long':  n_long_signals,
         'n_signals_short': n_short_signals,
+        'n_dropped_oversize': n_dropped_oversize,
     }
+    if n_dropped_oversize > 0:
+        n_total = n_long_signals + n_short_signals
+        print(f"  [decision_strategy] отброшено |pnl|>5%: "
+              f"{n_dropped_oversize}/{n_total} ({n_dropped_oversize/max(n_total,1):.1%})")
     return trades, diag
 
 
@@ -606,17 +615,35 @@ def main():
     # ── Sprint 2: decision-aware стратегия ─────────────────────────────
     if has_decision:
         print(f'\n{"═"*70}\n  E. DECISION LAYER (Sprint 2)\n{"═"*70}')
+        # E1: с предсказанными TP/SL (mfe_pred/mae_pred)
         dec_trades, dec_diag = simulate_decision_strategy(
             decision_signal=decision_signal,
             decision_conf=decision_conf,
             mfe_mae_pred=mfe_mae_pred,
             ohlc_true_pct=ohlc_true_pct,
             y_true=y_true,
+            use_predicted_tp_sl=True,
         )
         stats['E_decision_layer'] = analyze_trades(
             dec_trades, label='E_decision_layer',
             trading_days=trading_days, total_samples=total_samples, diag=dec_diag)
         all_trades['E_decision_layer'] = dec_trades
+
+        # E2 (B-15): close-only режим — соответствует expectancy из decision_sweep.
+        # Tест: если TP/SL miscalibrated (mfe/mae=~2.5% при close-движении ~0.1%),
+        # close-only показывает чистый PnL от направленного сигнала.
+        dec_trades_co, dec_diag_co = simulate_decision_strategy(
+            decision_signal=decision_signal,
+            decision_conf=decision_conf,
+            mfe_mae_pred=mfe_mae_pred,
+            ohlc_true_pct=ohlc_true_pct,
+            y_true=y_true,
+            use_predicted_tp_sl=False,
+        )
+        stats['E2_decision_close_only'] = analyze_trades(
+            dec_trades_co, label='E2_decision_close_only',
+            trading_days=trading_days, total_samples=total_samples, diag=dec_diag_co)
+        all_trades['E2_decision_close_only'] = dec_trades_co
 
     # Equity plot
     plt.figure(figsize=(14, 7))
