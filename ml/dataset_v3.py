@@ -49,7 +49,7 @@ from ml.hourly_encoder import (
 # Heikin-Ashi — 4-й канал свечного рендера
 # ══════════════════════════════════════════════════════════════════
 
-CACHE_VERSION = "v3.7.0"   # Sprint 1.5: intraday_feats [N,9,11] + intraday_extremes [N,2]
+CACHE_VERSION = "v3.8.0"   # Sprint 8.2: intraday_extremes [N,3] (+high_first column)
 N_RENDER_CHANNELS = _N_RENDER_CHANNELS_ORIG + 1   # 3 → 4
 
 

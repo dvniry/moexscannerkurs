@@ -248,7 +248,7 @@ def denormalize_ohlc(ohlc_norm: np.ndarray, atr_ratio: float,
 # Sprint 1.5 — Intraday targets: dHigh / dLow текущего дня T0
 # ══════════════════════════════════════════════════════════════════
 
-INTRADAY_N_COLS = 2  # [norm_dHigh, norm_dLow]
+INTRADAY_N_COLS = 3  # [norm_dHigh, norm_dLow, high_first]  Sprint 8.2
 
 
 def build_intraday_targets(
@@ -257,18 +257,20 @@ def build_intraday_targets(
     atr_ratio: np.ndarray,
     future_bars: int = None,
 ) -> np.ndarray:
-    """[N, 2]: нормированные [dHigh, dLow] текущего дня T0.
+    """[N, 3]: нормированные [dHigh, dLow] текущего дня T0 + high_first метка.
 
     dHigh = max(hourly highs today) от close[i-1]
     dLow  = min(hourly lows today)  от close[i-1]
     Нормировка: / close[i-1] / (atr_ratio[i] * sqrt(future_bars))
     Клампинг: [-5, +5]
+    high_first = 1.0 если индекс max(high) < индекс min(low), иначе 0.0
+                 -1.0 если часовые данные недоступны (маска для loss)
     """
     if future_bars is None:
         future_bars = CFG.future_bars
 
     N = len(daily_df)
-    out = np.zeros((N, INTRADAY_N_COLS), dtype=np.float32)
+    out = np.full((N, INTRADAY_N_COLS), -1.0, dtype=np.float32)  # -1 = unknown
 
     if N == 0 or hourly_df is None or (hasattr(hourly_df, 'empty') and hourly_df.empty):
         return out
@@ -310,6 +312,13 @@ def build_intraday_targets(
 
         out[i, 0] = float(np.clip((d_high - c_prev) / denom, -5.0, 5.0))
         out[i, 1] = float(np.clip((d_low  - c_prev) / denom, -5.0, 5.0))
+
+        # Sprint 8.2: high_first — 1.0 if high is reached before low intraday
+        h_arr = day_h['high'].values
+        l_arr = day_h['low'].values
+        idx_high = int(np.argmax(h_arr))
+        idx_low  = int(np.argmin(l_arr))
+        out[i, 2] = 1.0 if idx_high < idx_low else 0.0
 
     return out
 

@@ -1,0 +1,353 @@
+Это правильная архитектурная идея — HOLD как фильтр, а не класс. Вот полный план реализации.
+
+## Архитектурная схема
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  MultiScaleBackbone                  │
+└──────────────────────────┬──────────────────────────┘
+                           │ trunk features
+          ┌────────────────┼─────────────────┐
+          ▼                ▼                 ▼
+   dir_head          edge_head         intraday_enc
+  (UP/DOWN)     ┌────────────────┐    (hourly path)
+  binary        │ mfe_head       │
+                │ mae_head       │
+                │ fill_head      │
+                └────────────────┘
+                           │
+                    DecisionLayer
+                 (cost-aware filter)
+                           │
+              ┌────────────┼────────────┐
+              BUY        HOLD          SELL
+```
+
+## Новые targets в `dataset_v3.py`
+
+```python
+# dataset_v3.py — новые поля в __getitem__
+def _build_economic_targets(
+    closes, highs, lows,
+    idx: int,
+    future_bars: int,
+    entry_slippage: float = 0.0003,  # 0.03% спред+слип
+    commission: float = 0.0004,      # 0.04% комиссия
+) -> dict:
+    """
+    Returns dict с экономически значимыми таргетами.
+    Все значения нормализованы → в единицах дневной волатильности.
+    """
+    c0 = float(closes[idx])
+    if c0 < 1e-9:
+        return _zero_econ_targets()
+
+    future_slice = slice(idx + 1, idx + 1 + future_bars)
+    f_closes = closes[future_slice]
+    f_highs  = highs[future_slice]
+    f_lows   = lows[future_slice]
+
+    if len(f_closes) < future_bars:
+        return _zero_econ_targets()
+
+    c_final = float(f_closes[-1])
+    h_max   = float(np.max(f_highs))   # max high за период
+    l_min   = float(np.min(f_lows))    # min low за период
+
+    # Direction
+    future_ret = (c_final - c0) / c0
+
+    # MFE (Maximum Favorable Excursion)
+    # для LONG: насколько высоко ушла цена
+    # для SHORT: насколько низко ушла цена
+    mfe_long  = (h_max - c0) / c0              # всегда >= 0
+    mfe_short = (c0 - l_min) / c0              # всегда >= 0
+
+    # MAE (Maximum Adverse Excursion)
+    # для LONG: насколько глубоко падала цена (риск)
+    # для SHORT: насколько высоко шла цена (риск)
+    mae_long  = max(0.0, (c0 - l_min) / c0)   # просадка для лонга
+    mae_short = max(0.0, (h_max - c0) / c0)   # выброс вверх для шорта
+
+    # Reward/Risk ratio
+    rr_long  = mfe_long  / max(mae_long,  1e-6)
+    rr_short = mfe_short / max(mae_short, 1e-6)
+
+    # Fill probability (лимитный вход на -0.2% от текущей цены для лонга)
+    # P(low[t+1] <= c0 * 0.998) — упрощённая оценка
+    limit_long  = c0 * (1.0 - entry_slippage * 2)
+    limit_short = c0 * (1.0 + entry_slippage * 2)
+    fill_long  = float(float(f_lows[0])  <= limit_long)   # первый бар
+    fill_short = float(float(f_highs[0]) >= limit_short)
+
+    # Net edge (после затрат)
+    cost = commission + entry_slippage
+    net_edge_long  = future_ret  - cost
+    net_edge_short = -future_ret - cost
+
+    return {
+        "future_ret":   np.float32(future_ret),
+        "mfe_long":     np.float32(np.clip(mfe_long,  0, 0.20)),
+        "mae_long":     np.float32(np.clip(mae_long,  0, 0.20)),
+        "mfe_short":    np.float32(np.clip(mfe_short, 0, 0.20)),
+        "mae_short":    np.float32(np.clip(mae_short, 0, 0.20)),
+        "rr_long":      np.float32(np.clip(rr_long,  0, 10.0)),
+        "rr_short":     np.float32(np.clip(rr_short, 0, 10.0)),
+        "fill_long":    np.float32(fill_long),
+        "fill_short":   np.float32(fill_short),
+        "net_edge_long":  np.float32(net_edge_long),
+        "net_edge_short": np.float32(net_edge_short),
+    }
+```
+
+## Новые головы в `multiscale_cnn_v3.py`
+
+```python
+# Заменяем 3-class cls_head на:
+
+class EconomicHeads(nn.Module):
+    def __init__(self, in_dim: int):
+        super().__init__()
+        # Бинарная направленность
+        self.dir_head = nn.Sequential(
+            nn.Linear(in_dim, 64), nn.GELU(), nn.Dropout(0.2),
+            nn.Linear(64, 1)           # logit → sigmoid = P(UP)
+        )
+        # MFE/MAE предсказание
+        self.mfe_head = nn.Sequential(
+            nn.Linear(in_dim, 64), nn.GELU(), nn.Dropout(0.2),
+            nn.Linear(64, 4),          # [mfe_long, mae_long, mfe_short, mae_short]
+            nn.Softplus()              # всегда >= 0
+        )
+        # Fill probability
+        self.fill_head = nn.Sequential(
+            nn.Linear(in_dim, 32), nn.GELU(),
+            nn.Linear(32, 2),          # [fill_long, fill_short]
+            # sigmoid применяем в loss
+        )
+        # Net edge (scalar reward estimate)
+        self.edge_head = nn.Sequential(
+            nn.Linear(in_dim, 64), nn.GELU(), nn.Dropout(0.2),
+            nn.Linear(64, 2)           # [net_edge_long, net_edge_short]
+        )
+
+    def forward(self, x):
+        return {
+            "dir_logit":  self.dir_head(x).squeeze(-1),   # (B,)
+            "mfe_mae":    self.mfe_head(x),                # (B, 4)
+            "fill_logit": self.fill_head(x),               # (B, 2)
+            "edge_pred":  self.edge_head(x),               # (B, 2)
+        }
+```
+
+## `DecisionLayer` (новый файл `ml/decision_layer.py`)
+
+```python
+# ml/decision_layer.py
+"""
+Decision layer: превращает raw predictions в BUY/SELL/HOLD.
+Не обучается — это детерминированный фильтр поверх модели.
+"""
+import torch
+import numpy as np
+from dataclasses import dataclass
+
+
+@dataclass
+class TradingCosts:
+    commission:  float = 0.0004   # 0.04% (MOEX типичная)
+    slippage:    float = 0.0003   # 0.03% 
+    spread:      float = 0.0002   # 0.02%
+
+    @property
+    def total_roundtrip(self) -> float:
+        return 2 * (self.commission + self.slippage + self.spread)
+
+
+class DecisionLayer:
+    """
+    Принимает dict из model.economic_heads.forward()
+    Возвращает: signal ∈ {0=BUY, 1=HOLD, 2=SELL}, confidence, metadata
+    """
+    def __init__(
+        self,
+        costs: TradingCosts = None,
+        min_edge_ratio: float = 1.5,   # net_edge / cost >= 1.5
+        min_dir_prob:   float = 0.55,  # уверенность направления
+        min_fill_prob:  float = 0.40,  # шанс исполнения лимитки
+        min_rr:         float = 1.2,   # reward/risk ratio
+    ):
+        self.costs = costs or TradingCosts()
+        self.min_edge_ratio = min_edge_ratio
+        self.min_dir_prob   = min_dir_prob
+        self.min_fill_prob  = min_fill_prob
+        self.min_rr         = min_rr
+
+    def decide(self, preds: dict) -> dict:
+        """
+        preds: dict с тензорами от economic_heads
+        Returns: dict с signal, confidence, reason
+        """
+        dir_prob   = torch.sigmoid(preds["dir_logit"])     # P(UP)
+        mfe_mae    = preds["mfe_mae"]                      # (B, 4)
+        fill_prob  = torch.sigmoid(preds["fill_logit"])    # (B, 2)
+        edge_pred  = preds["edge_pred"]                    # (B, 2)
+
+        mfe_long,  mae_long  = mfe_mae[:, 0], mfe_mae[:, 1]
+        mfe_short, mae_short = mfe_mae[:, 2], mfe_mae[:, 3]
+
+        fill_long  = fill_prob[:, 0]
+        fill_short = fill_prob[:, 1]
+
+        cost = self.costs.total_roundtrip
+
+        # Reward/Risk
+        rr_long  = mfe_long  / (mae_long  + 1e-6)
+        rr_short = mfe_short / (mae_short + 1e-6)
+
+        # Edge ratio: насколько net_edge покрывает затраты
+        edge_long  = edge_pred[:, 0]
+        edge_short = edge_pred[:, 1]
+        edge_ratio_long  = edge_long  / (cost + 1e-6)
+        edge_ratio_short = edge_short / (cost + 1e-6)
+
+        B = dir_prob.shape[0]
+        signals    = torch.ones(B, dtype=torch.long)   # default = HOLD
+        confidence = torch.zeros(B)
+        reasons    = ["HOLD_default"] * B
+
+        for i in range(B):
+            p_up = float(dir_prob[i])
+            p_dn = 1.0 - p_up
+
+            # --- BUY фильтры ---
+            long_ok = (
+                p_up        >= self.min_dir_prob
+                and float(fill_long[i])        >= self.min_fill_prob
+                and float(rr_long[i])          >= self.min_rr
+                and float(edge_ratio_long[i])  >= self.min_edge_ratio
+            )
+            # --- SELL фильтры ---
+            short_ok = (
+                p_dn        >= self.min_dir_prob
+                and float(fill_short[i])       >= self.min_fill_prob
+                and float(rr_short[i])         >= self.min_rr
+                and float(edge_ratio_short[i]) >= self.min_edge_ratio
+            )
+
+            if long_ok and (not short_ok or p_up >= p_dn):
+                signals[i]    = 0   # BUY
+                confidence[i] = p_up * float(rr_long[i])
+                reasons[i]    = f"BUY p={p_up:.2f} rr={float(rr_long[i]):.2f}"
+            elif short_ok:
+                signals[i]    = 2   # SELL
+                confidence[i] = p_dn * float(rr_short[i])
+                reasons[i]    = f"SELL p={p_dn:.2f} rr={float(rr_short[i]):.2f}"
+            else:
+                reasons[i] = (
+                    f"HOLD p_up={p_up:.2f} "
+                    f"rr_l={float(rr_long[i]):.2f} "
+                    f"er_l={float(edge_ratio_long[i]):.2f}"
+                )
+
+        return {
+            "signal":     signals,         # (B,) 0=BUY 1=HOLD 2=SELL
+            "confidence": confidence,      # (B,) float
+            "dir_prob":   dir_prob,        # (B,) P(UP)
+            "rr_long":    rr_long,
+            "rr_short":   rr_short,
+            "fill_long":  fill_long,
+            "fill_short": fill_short,
+            "reasons":    reasons,
+        }
+```
+
+## Новый loss в `multiscale_cnn_v3.py`
+
+```python
+class EconomicLoss(nn.Module):
+    """
+    Заменяет MultiTaskLossV3.
+    """
+    def __init__(self, cost_roundtrip: float = 0.0014):
+        super().__init__()
+        self.cost = cost_roundtrip
+
+    def forward(self, preds: dict, targets: dict) -> tuple:
+        # 1. Direction: BCE
+        dir_target = (targets["future_ret"] > 0).float()
+        l_dir = F.binary_cross_entropy_with_logits(
+            preds["dir_logit"], dir_target,
+            pos_weight=torch.tensor(1.2, device=preds["dir_logit"].device)
+        )
+
+        # 2. MFE/MAE: Huber loss (SmoothL1)
+        mfe_mae_target = torch.stack([
+            targets["mfe_long"],  targets["mae_long"],
+            targets["mfe_short"], targets["mae_short"]
+        ], dim=1)
+        l_mfe = F.smooth_l1_loss(preds["mfe_mae"], mfe_mae_target, beta=0.01)
+
+        # 3. Fill probability: BCE
+        fill_target = torch.stack([
+            targets["fill_long"], targets["fill_short"]
+        ], dim=1)
+        l_fill = F.binary_cross_entropy_with_logits(
+            preds["fill_logit"], fill_target
+        )
+
+        # 4. Net edge: Huber loss
+        edge_target = torch.stack([
+            targets["net_edge_long"], targets["net_edge_short"]
+        ], dim=1)
+        l_edge = F.smooth_l1_loss(preds["edge_pred"], edge_target, beta=0.001)
+
+        # 5. Cost-aware penalty:
+        #    штрафуем за торговлю когда |net_edge| < cost
+        edge_long  = preds["edge_pred"][:, 0]
+        edge_short = preds["edge_pred"][:, 1]
+        cost_penalty = (
+            F.relu(self.cost - edge_long).mean() +
+            F.relu(self.cost - edge_short).mean()
+        )
+
+        total = (
+            1.0  * l_dir
+          + 0.5  * l_mfe
+          + 0.3  * l_fill
+          + 0.5  * l_edge
+          + 0.2  * cost_penalty
+        )
+
+        return total, {
+            "dir":     l_dir.item(),
+            "mfe":     l_mfe.item(),
+            "fill":    l_fill.item(),
+            "edge":    l_edge.item(),
+            "penalty": cost_penalty.item(),
+        }
+```
+
+## Порядок внедрения
+
+```
+Sprint 2.0 — экономические таргеты
+├── dataset_v3.py   → _build_economic_targets() → новые поля в __getitem__
+├── dataset_v3.py   → cache version: v3.5.0 (инвалидировать старый кэш)
+└── тест: проверить что mfe_long > 0 и mae_long >= 0 на train split
+
+Sprint 2.1 — новые головы
+├── multiscale_cnn_v3.py  → EconomicHeads заменяет cls_head
+├── multiscale_cnn_v3.py  → forward() возвращает dict
+└── тест: прогон одного батча, проверка форм
+
+Sprint 2.2 — новый loss + decision layer
+├── multiscale_cnn_v3.py  → EconomicLoss
+├── ml/decision_layer.py  → DecisionLayer
+└── trainer_v3.py         → новый формат батча и logging
+
+Sprint 2.3 — бэктест нового сигнала
+└── backtest_strategy.py  → использует DecisionLayer вместо argmax(logits)
+```
+
+Хочешь начать с `dataset_v3.py` — добавить `_build_economic_targets` и обновить `__getitem__`?

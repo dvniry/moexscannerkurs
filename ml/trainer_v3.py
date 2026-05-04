@@ -411,6 +411,7 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
         val_intra_steps = 0
         val_decision_signals = []         # Sprint 2: BUY/HOLD/SELL coverage
         val_decision_correct = []         # hit на не-HOLD
+        val_ohlc_c = []                   # Sprint 7 #10: bar1 ΔClose (ATR units) for sharpe_proxy
 
         from ml.decision_layer import DecisionLayer, costs_from_config, SIG_BUY, SIG_SELL, SIG_HOLD
         _dl_runtime = decision_layer or DecisionLayer(costs_from_config())
@@ -439,6 +440,7 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 val_preds.extend(lo.argmax(1).cpu().numpy())
                 val_trues.extend(cls_y.numpy())
                 val_dir_prob.append(torch.sigmoid(dir_l).cpu().numpy())
+                val_ohlc_c.append(ohlc_y[:, 3].numpy())  # Sprint 7 #10: bar1 ΔClose
 
                 li = _masked_intraday_loss(intraday_p, intraday_t, intraday_m)
                 val_intra_total += li.item()
@@ -481,6 +483,16 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
             dir_pred = (dir_p_np[mask_ud] > 0.5).astype(int)
             dir_acc_head = float((dir_pred == dir_target).mean())
 
+        # Sprint 7 #10: sharpe_proxy from val dir_prob and bar1 ΔClose
+        sharpe_proxy = 0.0
+        if val_ohlc_c:
+            ohlc_c_np = np.concatenate(val_ohlc_c)
+            dir_signal = np.where(dir_p_np > 0.5, 1.0, -1.0)
+            pnl_proxy = dir_signal * ohlc_c_np - 2 * 0.001
+            if pnl_proxy.std() > 1e-9:
+                sharpe_proxy = float(np.clip(
+                    pnl_proxy.mean() / pnl_proxy.std() * np.sqrt(252), -2.0, 2.0))
+
         # Sprint 2: decision-aware coverage и hit rate
         dec_buy_pct = dec_hold_pct = dec_sell_pct = 0.0
         dec_hit = 0.5
@@ -495,11 +507,12 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 if len(hit_arr) > 0:
                     dec_hit = float(hit_arr.mean())
 
-        # Sprint 2: метрика = dir_acc (главный сигнал, стабилен) +
-        # бонус за dec_hit > 0.5 (сигналы полезнее случайных).
-        # prec_ud убран — слишком шумный (0.18→0.61 между эпохами),
-        # доминировал и приводил к выбору случайных чекпоинтов.
-        val_metric = dir_acc_head + 0.3 * max(dec_hit - 0.5, 0.0)
+        # Sprint 7 #10: multi-objective val_metric.
+        # dir_acc_head доминирует (≥70%), sharpe_proxy учитывается только если > 0
+        # (шумный на малом val-сете — не штрафуем за отрицательный).
+        val_metric = (dir_acc_head
+                      + CFG.val_metric_alpha * dec_hit
+                      + CFG.val_metric_beta * max(sharpe_proxy, 0.0))
         scheduler.step()
 
         print(f'  [{phase_name}] E{epoch:3d}/{n_epochs} '

@@ -1,0 +1,34 @@
+{
+  "best_params": {
+    "T": 0.7,
+    "min_dir_prob": 0.72,
+    "min_sell_dir_prob": 0.28,
+    "min_edge_ratio": 8.0
+  },
+  "best_oos_metrics": {
+    "n_act": 229.0,
+    "coverage": 0.017157413651007716,
+    "hit_rate": 0.42358078602620086,
+    "expectancy_pct": -0.11954495310783386,
+    "win_rate": 0.4017467248908297,
+    "sharpe": -1.7326995754340209
+  },
+  "baseline_oos_metrics": {
+    "n_act": 881.0,
+    "n_buy": 302.0,
+    "n_sell": 579.0,
+    "coverage": 0.06600734247396418,
+    "hit_rate": 0.42565266742338254,
+    "expectancy_pct": -0.17323917150497437,
+    "win_rate": 0.3416572077185017,
+    "sharpe": -3.1865771864151524
+  },
+  "n_combinations_total": 672,
+  "n_combinations_valid": 663,
+  "calib_frac": 0.3,
+  "mode": "quick",
+  "recommended_T": 0.7,
+  "recommended_dir_thr": 0.72,
+  "recommended_sell_thr": 0.28,
+  "recommended_edge_ratio": 8.0
+}

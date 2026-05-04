@@ -1,0 +1,1746 @@
+{
+  "SBER": [
+    {
+      "record_date": "2026-07-20T00:00:00+00:00",
+      "payment_date": "2026-08-03T00:00:00+00:00",
+      "declared_date": "2026-07-18T00:00:00+00:00",
+      "last_buy_date": "2026-07-17T00:00:00+00:00",
+      "dividend_net": 37.64,
+      "yield_value": 11.78,
+      "close_price": 319.59,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-07-18T00:00:00+00:00",
+      "payment_date": "2025-08-01T00:00:00+00:00",
+      "declared_date": "2025-07-16T00:00:00+00:00",
+      "last_buy_date": "2025-07-17T00:00:00+00:00",
+      "dividend_net": 34.84,
+      "yield_value": 10.83,
+      "close_price": 325.92,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-11T00:00:00+00:00",
+      "payment_date": "2024-07-21T00:00:00+00:00",
+      "declared_date": "2024-07-01T00:00:00+00:00",
+      "last_buy_date": "2024-07-10T00:00:00+00:00",
+      "dividend_net": 33.3,
+      "yield_value": 10.44,
+      "close_price": 315.5,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-05-11T00:00:00+00:00",
+      "payment_date": "2023-06-16T00:00:00+00:00",
+      "declared_date": "2023-04-21T00:00:00+00:00",
+      "last_buy_date": "2023-05-10T00:00:00+00:00",
+      "dividend_net": 25.0,
+      "yield_value": 10.46,
+      "close_price": 238.9,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "SBERP": [
+    {
+      "record_date": "2026-07-20T00:00:00+00:00",
+      "payment_date": "2026-08-03T00:00:00+00:00",
+      "declared_date": "2026-07-18T00:00:00+00:00",
+      "last_buy_date": "2026-07-17T00:00:00+00:00",
+      "dividend_net": 37.64,
+      "yield_value": 11.78,
+      "close_price": 319.5,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-07-18T00:00:00+00:00",
+      "payment_date": "2025-08-01T00:00:00+00:00",
+      "declared_date": "2025-07-16T00:00:00+00:00",
+      "last_buy_date": "2025-07-17T00:00:00+00:00",
+      "dividend_net": 34.84,
+      "yield_value": 10.96,
+      "close_price": 323.45,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-11T00:00:00+00:00",
+      "payment_date": "2024-07-21T00:00:00+00:00",
+      "declared_date": "2024-07-01T00:00:00+00:00",
+      "last_buy_date": "2024-07-10T00:00:00+00:00",
+      "dividend_net": 33.3,
+      "yield_value": 10.45,
+      "close_price": 316.3,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-05-11T00:00:00+00:00",
+      "payment_date": "2023-06-16T00:00:00+00:00",
+      "declared_date": "2023-04-21T00:00:00+00:00",
+      "last_buy_date": "2023-05-10T00:00:00+00:00",
+      "dividend_net": 25.0,
+      "yield_value": 10.56,
+      "close_price": 236.75,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "VTBR": [
+    {
+      "record_date": "2025-07-11T00:00:00+00:00",
+      "payment_date": "2025-07-25T00:00:00+00:00",
+      "declared_date": "2025-07-09T00:00:00+00:00",
+      "last_buy_date": "2025-07-10T00:00:00+00:00",
+      "dividend_net": 25.58,
+      "yield_value": 27.41,
+      "close_price": 93.97,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "T": [
+    {
+      "record_date": "2026-04-13T00:00:00+00:00",
+      "payment_date": "2026-05-01T00:00:00+00:00",
+      "declared_date": "2026-04-08T00:00:00+00:00",
+      "last_buy_date": "2026-04-12T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.05,
+      "close_price": 26.47,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2026-01-13T00:00:00+00:00",
+      "payment_date": "2026-02-03T00:00:00+00:00",
+      "declared_date": "2026-01-10T00:00:00+00:00",
+      "last_buy_date": "2026-01-12T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.17,
+      "close_price": 23.74,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-10-13T00:00:00+00:00",
+      "payment_date": "2025-11-03T00:00:00+00:00",
+      "declared_date": "2025-10-08T00:00:00+00:00",
+      "last_buy_date": "2025-10-12T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.07,
+      "close_price": 25.87,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-04-11T00:00:00+00:00",
+      "payment_date": "2025-05-01T00:00:00+00:00",
+      "declared_date": "2025-04-08T00:00:00+00:00",
+      "last_buy_date": "2025-04-10T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.05,
+      "close_price": 26.47,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-01-13T00:00:00+00:00",
+      "payment_date": "2025-02-03T00:00:00+00:00",
+      "declared_date": "2025-01-08T00:00:00+00:00",
+      "last_buy_date": "2025-01-12T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.28,
+      "close_price": 22.86,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-10-11T00:00:00+00:00",
+      "payment_date": "2024-11-01T00:00:00+00:00",
+      "declared_date": "2024-10-08T00:00:00+00:00",
+      "last_buy_date": "2024-10-10T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.27,
+      "close_price": 21.93,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-11T00:00:00+00:00",
+      "payment_date": "2024-08-01T00:00:00+00:00",
+      "declared_date": "2024-07-08T00:00:00+00:00",
+      "last_buy_date": "2024-07-10T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.48,
+      "close_price": 18.8,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-04-10T00:00:00+00:00",
+      "payment_date": "2024-05-01T00:00:00+00:00",
+      "declared_date": "2024-04-07T00:00:00+00:00",
+      "last_buy_date": "2024-04-09T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.6099999999999999,
+      "close_price": 17.25,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-01-10T00:00:00+00:00",
+      "payment_date": "2024-02-01T00:00:00+00:00",
+      "declared_date": "2023-12-13T00:00:00+00:00",
+      "last_buy_date": "2024-01-09T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.6,
+      "close_price": 17.32,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-10-10T00:00:00+00:00",
+      "payment_date": "2023-11-01T00:00:00+00:00",
+      "declared_date": "2023-09-29T00:00:00+00:00",
+      "last_buy_date": "2023-10-09T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.88,
+      "close_price": 14.83,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-10T00:00:00+00:00",
+      "payment_date": "2023-08-01T00:00:00+00:00",
+      "declared_date": "2023-06-07T00:00:00+00:00",
+      "last_buy_date": "2023-07-09T00:00:00+00:00",
+      "dividend_net": 0.2775,
+      "yield_value": 1.78,
+      "close_price": 15.87,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    }
+  ],
+  "CBOM": [],
+  "BSPB": [
+    {
+      "record_date": "2026-05-12T00:00:00+00:00",
+      "payment_date": "2026-05-26T00:00:00+00:00",
+      "declared_date": "2026-05-10T00:00:00+00:00",
+      "last_buy_date": "2026-05-11T00:00:00+00:00",
+      "dividend_net": 26.23,
+      "yield_value": 7.8,
+      "close_price": 336.42,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-10-06T00:00:00+00:00",
+      "payment_date": "2025-10-20T00:00:00+00:00",
+      "declared_date": "2025-10-04T00:00:00+00:00",
+      "last_buy_date": "2025-10-03T00:00:00+00:00",
+      "dividend_net": 16.61,
+      "yield_value": 4.84,
+      "close_price": 341.41,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-05-05T00:00:00+00:00",
+      "payment_date": "2025-05-21T00:00:00+00:00",
+      "declared_date": "2025-05-03T00:00:00+00:00",
+      "last_buy_date": "2025-05-02T00:00:00+00:00",
+      "dividend_net": 29.72,
+      "yield_value": 7.32,
+      "close_price": 406.5,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-09-30T00:00:00+00:00",
+      "payment_date": "2024-10-14T00:00:00+00:00",
+      "declared_date": "2024-09-28T00:00:00+00:00",
+      "last_buy_date": "2024-09-27T00:00:00+00:00",
+      "dividend_net": 27.26,
+      "yield_value": 6.99,
+      "close_price": 392.15,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-05-06T00:00:00+00:00",
+      "payment_date": "2024-06-13T00:00:00+00:00",
+      "declared_date": "2024-04-25T00:00:00+00:00",
+      "last_buy_date": "2024-05-03T00:00:00+00:00",
+      "dividend_net": 23.37,
+      "yield_value": 6.85,
+      "close_price": 337.84,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-10-09T00:00:00+00:00",
+      "payment_date": "2023-10-23T00:00:00+00:00",
+      "declared_date": "2023-10-07T00:00:00+00:00",
+      "last_buy_date": "2023-10-06T00:00:00+00:00",
+      "dividend_net": 19.08,
+      "yield_value": 6.77,
+      "close_price": 280.31,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-05-10T00:00:00+00:00",
+      "payment_date": "2023-06-15T00:00:00+00:00",
+      "declared_date": "2023-04-27T00:00:00+00:00",
+      "last_buy_date": "2023-05-09T00:00:00+00:00",
+      "dividend_net": 21.16,
+      "yield_value": 15.13,
+      "close_price": 168.0,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "MOEX": [
+    {
+      "record_date": "2025-07-10T00:00:00+00:00",
+      "payment_date": "2025-07-24T00:00:00+00:00",
+      "declared_date": "2025-07-08T00:00:00+00:00",
+      "last_buy_date": "2025-07-09T00:00:00+00:00",
+      "dividend_net": 26.11,
+      "yield_value": 13.44,
+      "close_price": 190.03,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-06-14T00:00:00+00:00",
+      "payment_date": "2024-07-19T00:00:00+00:00",
+      "declared_date": "2024-05-31T00:00:00+00:00",
+      "last_buy_date": "2024-06-13T00:00:00+00:00",
+      "dividend_net": 17.35,
+      "yield_value": 6.91,
+      "close_price": 244.2,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-06-16T00:00:00+00:00",
+      "payment_date": "2023-07-21T00:00:00+00:00",
+      "declared_date": "2023-06-02T00:00:00+00:00",
+      "last_buy_date": "2023-06-15T00:00:00+00:00",
+      "dividend_net": 4.84,
+      "yield_value": 3.79,
+      "close_price": 127.8,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "GAZP": [],
+  "LKOH": [
+    {
+      "record_date": "2026-05-04T00:00:00+00:00",
+      "payment_date": "2026-05-18T00:00:00+00:00",
+      "declared_date": "2026-04-29T00:00:00+00:00",
+      "last_buy_date": "2026-04-30T00:00:00+00:00",
+      "dividend_net": 278.0,
+      "yield_value": 5.12,
+      "close_price": 5471.0,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2026-01-12T00:00:00+00:00",
+      "payment_date": "2026-01-22T00:00:00+00:00",
+      "declared_date": "2026-01-10T00:00:00+00:00",
+      "last_buy_date": "2026-01-09T00:00:00+00:00",
+      "dividend_net": 397.0,
+      "yield_value": 6.8100000000000005,
+      "close_price": 5845.5,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-06-03T00:00:00+00:00",
+      "payment_date": "2025-06-18T00:00:00+00:00",
+      "declared_date": "2025-06-01T00:00:00+00:00",
+      "last_buy_date": "2025-06-02T00:00:00+00:00",
+      "dividend_net": 541.0,
+      "yield_value": 8.03,
+      "close_price": 6766.0,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-12-17T00:00:00+00:00",
+      "payment_date": "2024-12-31T00:00:00+00:00",
+      "declared_date": "2024-12-15T00:00:00+00:00",
+      "last_buy_date": "2024-12-16T00:00:00+00:00",
+      "dividend_net": 514.0,
+      "yield_value": 7.55,
+      "close_price": 6736.0,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-05-07T00:00:00+00:00",
+      "payment_date": "2024-06-13T00:00:00+00:00",
+      "declared_date": "2024-04-26T00:00:00+00:00",
+      "last_buy_date": "2024-05-06T00:00:00+00:00",
+      "dividend_net": 498.0,
+      "yield_value": 6.15,
+      "close_price": 7971.0,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-12-17T00:00:00+00:00",
+      "payment_date": "2024-01-26T00:00:00+00:00",
+      "declared_date": "2023-12-05T00:00:00+00:00",
+      "last_buy_date": "2023-12-14T00:00:00+00:00",
+      "dividend_net": 447.0,
+      "yield_value": 6.35,
+      "close_price": 6914.5,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-06-05T00:00:00+00:00",
+      "payment_date": "2023-07-07T00:00:00+00:00",
+      "declared_date": "2023-05-25T00:00:00+00:00",
+      "last_buy_date": "2023-06-02T00:00:00+00:00",
+      "dividend_net": 438.0,
+      "yield_value": 7.75,
+      "close_price": 5653.0,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "NVTK": [
+    {
+      "record_date": "2026-04-13T00:00:00+00:00",
+      "payment_date": "2026-04-28T00:00:00+00:00",
+      "declared_date": "2026-04-11T00:00:00+00:00",
+      "last_buy_date": "2026-04-10T00:00:00+00:00",
+      "dividend_net": 47.23,
+      "yield_value": 3.79,
+      "close_price": 1246.5,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-10-06T00:00:00+00:00",
+      "payment_date": "2025-10-20T00:00:00+00:00",
+      "declared_date": "2025-10-04T00:00:00+00:00",
+      "last_buy_date": "2025-10-03T00:00:00+00:00",
+      "dividend_net": 35.5,
+      "yield_value": 3.17,
+      "close_price": 1092.6,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-04-28T00:00:00+00:00",
+      "payment_date": "2025-05-16T00:00:00+00:00",
+      "declared_date": "2025-04-26T00:00:00+00:00",
+      "last_buy_date": "2025-04-25T00:00:00+00:00",
+      "dividend_net": 46.65,
+      "yield_value": 3.74,
+      "close_price": 1299.0,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-10-11T00:00:00+00:00",
+      "payment_date": "2024-10-25T00:00:00+00:00",
+      "declared_date": "2024-10-09T00:00:00+00:00",
+      "last_buy_date": "2024-10-10T00:00:00+00:00",
+      "dividend_net": 35.5,
+      "yield_value": 3.65,
+      "close_price": 989.8,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-03-26T00:00:00+00:00",
+      "payment_date": "2024-05-02T00:00:00+00:00",
+      "declared_date": "2024-03-15T00:00:00+00:00",
+      "last_buy_date": "2024-03-25T00:00:00+00:00",
+      "dividend_net": 44.09,
+      "yield_value": 3.26,
+      "close_price": 1364.8,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-10-10T00:00:00+00:00",
+      "payment_date": "2023-10-24T00:00:00+00:00",
+      "declared_date": "2023-09-30T00:00:00+00:00",
+      "last_buy_date": "2023-10-09T00:00:00+00:00",
+      "dividend_net": 34.5,
+      "yield_value": 2.0,
+      "close_price": 1747.8,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    }
+  ],
+  "ROSN": [
+    {
+      "record_date": "2026-01-12T00:00:00+00:00",
+      "payment_date": "2026-01-27T00:00:00+00:00",
+      "declared_date": "2026-01-10T00:00:00+00:00",
+      "last_buy_date": "2026-01-09T00:00:00+00:00",
+      "dividend_net": 11.56,
+      "yield_value": 2.88,
+      "close_price": 404.6,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-07-20T00:00:00+00:00",
+      "payment_date": "2025-08-01T00:00:00+00:00",
+      "declared_date": "2025-07-16T00:00:00+00:00",
+      "last_buy_date": "2025-07-17T00:00:00+00:00",
+      "dividend_net": 14.68,
+      "yield_value": 3.48,
+      "close_price": 424.4,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-01-10T00:00:00+00:00",
+      "payment_date": "2025-01-24T00:00:00+00:00",
+      "declared_date": "2025-01-08T00:00:00+00:00",
+      "last_buy_date": "2025-01-09T00:00:00+00:00",
+      "dividend_net": 36.47,
+      "yield_value": 6.16,
+      "close_price": 569.65,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-09T00:00:00+00:00",
+      "payment_date": "2024-08-13T00:00:00+00:00",
+      "declared_date": "2024-06-28T00:00:00+00:00",
+      "last_buy_date": "2024-07-08T00:00:00+00:00",
+      "dividend_net": 29.01,
+      "yield_value": 5.21,
+      "close_price": 562.25,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-01-11T00:00:00+00:00",
+      "payment_date": "2024-02-15T00:00:00+00:00",
+      "declared_date": "2023-12-22T00:00:00+00:00",
+      "last_buy_date": "2024-01-10T00:00:00+00:00",
+      "dividend_net": 30.77,
+      "yield_value": 5.13,
+      "close_price": 601.95,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-11T00:00:00+00:00",
+      "payment_date": "2023-07-25T00:00:00+00:00",
+      "declared_date": "2023-07-08T00:00:00+00:00",
+      "last_buy_date": "2023-07-10T00:00:00+00:00",
+      "dividend_net": 17.97,
+      "yield_value": 3.73,
+      "close_price": 482.1,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "TATN": [
+    {
+      "record_date": "2026-07-15T00:00:00+00:00",
+      "payment_date": "2026-07-29T00:00:00+00:00",
+      "declared_date": "2026-07-13T00:00:00+00:00",
+      "last_buy_date": "2026-07-14T00:00:00+00:00",
+      "dividend_net": 11.61,
+      "yield_value": 2.0,
+      "close_price": 580.0,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2026-01-11T00:00:00+00:00",
+      "payment_date": "2026-01-26T00:00:00+00:00",
+      "declared_date": "2026-01-07T00:00:00+00:00",
+      "last_buy_date": "2026-01-08T00:00:00+00:00",
+      "dividend_net": 8.13,
+      "yield_value": 1.42,
+      "close_price": 571.5,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-10-14T00:00:00+00:00",
+      "payment_date": "2025-10-28T00:00:00+00:00",
+      "declared_date": "2025-10-12T00:00:00+00:00",
+      "last_buy_date": "2025-10-13T00:00:00+00:00",
+      "dividend_net": 14.35,
+      "yield_value": 2.45,
+      "close_price": 590.3,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-06-02T00:00:00+00:00",
+      "payment_date": "2025-06-16T00:00:00+00:00",
+      "declared_date": "2025-05-31T00:00:00+00:00",
+      "last_buy_date": "2025-05-30T00:00:00+00:00",
+      "dividend_net": 43.11,
+      "yield_value": 6.27,
+      "close_price": 706.1,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-01-08T00:00:00+00:00",
+      "payment_date": "2025-01-23T00:00:00+00:00",
+      "declared_date": "2025-01-06T00:00:00+00:00",
+      "last_buy_date": "2025-01-06T00:00:00+00:00",
+      "dividend_net": 17.39,
+      "yield_value": 2.61,
+      "close_price": 664.6,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-10-08T00:00:00+00:00",
+      "payment_date": "2024-10-22T00:00:00+00:00",
+      "declared_date": "2024-10-06T00:00:00+00:00",
+      "last_buy_date": "2024-10-07T00:00:00+00:00",
+      "dividend_net": 38.2,
+      "yield_value": 5.8,
+      "close_price": 658.5,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-09T00:00:00+00:00",
+      "payment_date": "2024-08-13T00:00:00+00:00",
+      "declared_date": "2024-06-14T00:00:00+00:00",
+      "last_buy_date": "2024-07-08T00:00:00+00:00",
+      "dividend_net": 25.17,
+      "yield_value": 3.64,
+      "close_price": 691.5,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-01-09T00:00:00+00:00",
+      "payment_date": "2024-02-13T00:00:00+00:00",
+      "declared_date": "2023-12-28T00:00:00+00:00",
+      "last_buy_date": "2024-01-08T00:00:00+00:00",
+      "dividend_net": 35.17,
+      "yield_value": 4.86,
+      "close_price": 724.0,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-10-11T00:00:00+00:00",
+      "payment_date": "2023-10-25T00:00:00+00:00",
+      "declared_date": "2023-10-09T00:00:00+00:00",
+      "last_buy_date": "2023-10-10T00:00:00+00:00",
+      "dividend_net": 27.54,
+      "yield_value": 4.29,
+      "close_price": 648.3,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-11T00:00:00+00:00",
+      "payment_date": "2023-07-25T00:00:00+00:00",
+      "declared_date": "2023-07-08T00:00:00+00:00",
+      "last_buy_date": "2023-07-10T00:00:00+00:00",
+      "dividend_net": 27.71,
+      "yield_value": 5.54,
+      "close_price": 499.8,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    }
+  ],
+  "TATNP": [
+    {
+      "record_date": "2026-07-15T00:00:00+00:00",
+      "payment_date": "2026-07-29T00:00:00+00:00",
+      "declared_date": "2026-07-13T00:00:00+00:00",
+      "last_buy_date": "2026-07-14T00:00:00+00:00",
+      "dividend_net": 11.61,
+      "yield_value": 2.13,
+      "close_price": 544.0,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2026-01-11T00:00:00+00:00",
+      "payment_date": "2026-01-26T00:00:00+00:00",
+      "declared_date": "2026-01-07T00:00:00+00:00",
+      "last_buy_date": "2026-01-08T00:00:00+00:00",
+      "dividend_net": 8.13,
+      "yield_value": 1.52,
+      "close_price": 533.9,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-10-14T00:00:00+00:00",
+      "payment_date": "2025-10-28T00:00:00+00:00",
+      "declared_date": "2025-10-12T00:00:00+00:00",
+      "last_buy_date": "2025-10-13T00:00:00+00:00",
+      "dividend_net": 14.35,
+      "yield_value": 2.59,
+      "close_price": 558.1,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-06-02T00:00:00+00:00",
+      "payment_date": "2025-06-16T00:00:00+00:00",
+      "declared_date": "2025-05-31T00:00:00+00:00",
+      "last_buy_date": "2025-05-30T00:00:00+00:00",
+      "dividend_net": 43.11,
+      "yield_value": 6.43,
+      "close_price": 676.8,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-01-08T00:00:00+00:00",
+      "payment_date": "2025-01-23T00:00:00+00:00",
+      "declared_date": "2025-01-06T00:00:00+00:00",
+      "last_buy_date": "2025-01-06T00:00:00+00:00",
+      "dividend_net": 17.39,
+      "yield_value": 2.64,
+      "close_price": 656.7,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-10-08T00:00:00+00:00",
+      "payment_date": "2024-10-22T00:00:00+00:00",
+      "declared_date": "2024-10-06T00:00:00+00:00",
+      "last_buy_date": "2024-10-07T00:00:00+00:00",
+      "dividend_net": 38.2,
+      "yield_value": 5.86,
+      "close_price": 655.0,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-09T00:00:00+00:00",
+      "payment_date": "2024-08-13T00:00:00+00:00",
+      "declared_date": "2024-06-14T00:00:00+00:00",
+      "last_buy_date": "2024-07-08T00:00:00+00:00",
+      "dividend_net": 25.17,
+      "yield_value": 3.7800000000000002,
+      "close_price": 668.0,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-01-09T00:00:00+00:00",
+      "payment_date": "2024-02-13T00:00:00+00:00",
+      "declared_date": "2023-12-28T00:00:00+00:00",
+      "last_buy_date": "2024-01-08T00:00:00+00:00",
+      "dividend_net": 35.17,
+      "yield_value": 4.86,
+      "close_price": 722.1,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-10-11T00:00:00+00:00",
+      "payment_date": "2023-10-25T00:00:00+00:00",
+      "declared_date": "2023-10-09T00:00:00+00:00",
+      "last_buy_date": "2023-10-10T00:00:00+00:00",
+      "dividend_net": 27.54,
+      "yield_value": 4.3,
+      "close_price": 648.9,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-11T00:00:00+00:00",
+      "payment_date": "2023-07-25T00:00:00+00:00",
+      "declared_date": "2023-07-08T00:00:00+00:00",
+      "last_buy_date": "2023-07-10T00:00:00+00:00",
+      "dividend_net": 27.71,
+      "yield_value": 5.62,
+      "close_price": 493.1,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    }
+  ],
+  "SIBN": [
+    {
+      "record_date": "2025-10-13T00:00:00+00:00",
+      "payment_date": "2025-10-24T00:00:00+00:00",
+      "declared_date": "2025-10-11T00:00:00+00:00",
+      "last_buy_date": "2025-10-10T00:00:00+00:00",
+      "dividend_net": 17.3,
+      "yield_value": 3.45,
+      "close_price": 507.0,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-07-08T00:00:00+00:00",
+      "payment_date": "2025-07-21T00:00:00+00:00",
+      "declared_date": "2025-07-06T00:00:00+00:00",
+      "last_buy_date": "2025-07-07T00:00:00+00:00",
+      "dividend_net": 27.21,
+      "yield_value": 5.1,
+      "close_price": 527.3,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-10-14T00:00:00+00:00",
+      "payment_date": "2024-10-28T00:00:00+00:00",
+      "declared_date": "2024-10-12T00:00:00+00:00",
+      "last_buy_date": "2024-10-11T00:00:00+00:00",
+      "dividend_net": 51.96,
+      "yield_value": 7.41,
+      "close_price": 699.0,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-08T00:00:00+00:00",
+      "payment_date": "2024-08-09T00:00:00+00:00",
+      "declared_date": "2024-06-26T00:00:00+00:00",
+      "last_buy_date": "2024-07-05T00:00:00+00:00",
+      "dividend_net": 19.49,
+      "yield_value": 2.84,
+      "close_price": 690.85,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-12-27T00:00:00+00:00",
+      "payment_date": "2024-01-10T00:00:00+00:00",
+      "declared_date": "2023-12-25T00:00:00+00:00",
+      "last_buy_date": "2023-12-26T00:00:00+00:00",
+      "dividend_net": 82.94,
+      "yield_value": 9.12,
+      "close_price": 929.95,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-10T00:00:00+00:00",
+      "payment_date": "2023-07-24T00:00:00+00:00",
+      "declared_date": "2023-07-05T00:00:00+00:00",
+      "last_buy_date": "2023-07-07T00:00:00+00:00",
+      "dividend_net": 12.16,
+      "yield_value": 2.33,
+      "close_price": 522.0,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "SNGS": [
+    {
+      "record_date": "2025-07-17T00:00:00+00:00",
+      "payment_date": "2025-07-31T00:00:00+00:00",
+      "declared_date": "2025-07-15T00:00:00+00:00",
+      "last_buy_date": "2025-07-16T00:00:00+00:00",
+      "dividend_net": 0.9,
+      "yield_value": 4.03,
+      "close_price": 23.22,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-18T00:00:00+00:00",
+      "payment_date": "2024-08-22T00:00:00+00:00",
+      "declared_date": "2024-06-28T00:00:00+00:00",
+      "last_buy_date": "2024-07-17T00:00:00+00:00",
+      "dividend_net": 0.85,
+      "yield_value": 3.1,
+      "close_price": 27.635,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-20T00:00:00+00:00",
+      "payment_date": "2023-08-03T00:00:00+00:00",
+      "declared_date": "2023-07-17T00:00:00+00:00",
+      "last_buy_date": "2023-07-19T00:00:00+00:00",
+      "dividend_net": 0.8,
+      "yield_value": 2.7,
+      "close_price": 29.65,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "AFLT": [
+    {
+      "record_date": "2025-07-18T00:00:00+00:00",
+      "payment_date": "2025-08-01T00:00:00+00:00",
+      "declared_date": "2025-07-16T00:00:00+00:00",
+      "last_buy_date": "2025-07-17T00:00:00+00:00",
+      "dividend_net": 5.27,
+      "yield_value": 8.73,
+      "close_price": 61.7,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "TRNFP": [
+    {
+      "record_date": "2025-07-17T00:00:00+00:00",
+      "payment_date": "2025-07-31T00:00:00+00:00",
+      "declared_date": "2025-07-15T00:00:00+00:00",
+      "last_buy_date": "2025-07-16T00:00:00+00:00",
+      "dividend_net": 198.25,
+      "yield_value": 13.88,
+      "close_price": 1471.6,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-18T00:00:00+00:00",
+      "payment_date": "2024-08-22T00:00:00+00:00",
+      "declared_date": "2024-06-28T00:00:00+00:00",
+      "last_buy_date": "2024-07-17T00:00:00+00:00",
+      "dividend_net": 177.2,
+      "yield_value": 12.4,
+      "close_price": 1433.0,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-20T00:00:00+00:00",
+      "payment_date": "2023-08-03T00:00:00+00:00",
+      "declared_date": "2023-07-09T00:00:00+00:00",
+      "last_buy_date": "2023-07-19T00:00:00+00:00",
+      "dividend_net": 166.652,
+      "yield_value": 11.87,
+      "close_price": 1403.5,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    }
+  ],
+  "BANEP": [
+    {
+      "record_date": "2025-07-14T00:00:00+00:00",
+      "payment_date": "2025-07-28T00:00:00+00:00",
+      "declared_date": "2025-07-12T00:00:00+00:00",
+      "last_buy_date": "2025-07-11T00:00:00+00:00",
+      "dividend_net": 147.31,
+      "yield_value": 13.11,
+      "close_price": 1111.5,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-12T00:00:00+00:00",
+      "payment_date": "2024-08-16T00:00:00+00:00",
+      "declared_date": "2024-06-26T00:00:00+00:00",
+      "last_buy_date": "2024-07-11T00:00:00+00:00",
+      "dividend_net": 249.69,
+      "yield_value": 14.17,
+      "close_price": 1860.0,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-07T00:00:00+00:00",
+      "payment_date": "2023-07-21T00:00:00+00:00",
+      "declared_date": "2023-07-04T00:00:00+00:00",
+      "last_buy_date": "2023-07-06T00:00:00+00:00",
+      "dividend_net": 199.89,
+      "yield_value": 12.85,
+      "close_price": 1555.0,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "FLOT": [
+    {
+      "record_date": "2024-07-20T00:00:00+00:00",
+      "payment_date": "2024-08-23T00:00:00+00:00",
+      "declared_date": "2024-06-30T00:00:00+00:00",
+      "last_buy_date": "2024-07-18T00:00:00+00:00",
+      "dividend_net": 11.27,
+      "yield_value": 10.11,
+      "close_price": 111.6,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-01-07T00:00:00+00:00",
+      "payment_date": "2024-02-12T00:00:00+00:00",
+      "declared_date": "2023-12-18T00:00:00+00:00",
+      "last_buy_date": "2024-01-04T00:00:00+00:00",
+      "dividend_net": 6.32,
+      "yield_value": 4.26,
+      "close_price": 148.9,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-05T00:00:00+00:00",
+      "payment_date": "2023-07-19T00:00:00+00:00",
+      "declared_date": "2023-06-15T00:00:00+00:00",
+      "last_buy_date": "2023-07-04T00:00:00+00:00",
+      "dividend_net": 4.29,
+      "yield_value": 4.83,
+      "close_price": 88.77,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "GMKN": [
+    {
+      "record_date": "2023-12-26T00:00:00+00:00",
+      "payment_date": "2024-02-07T00:00:00+00:00",
+      "declared_date": "2023-12-07T00:00:00+00:00",
+      "last_buy_date": "2023-12-25T00:00:00+00:00",
+      "dividend_net": 9.1533,
+      "yield_value": 5.34,
+      "close_price": 170.88,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "MAGN": [
+    {
+      "record_date": "2024-10-17T00:00:00+00:00",
+      "payment_date": "2024-10-31T00:00:00+00:00",
+      "declared_date": "2024-10-15T00:00:00+00:00",
+      "last_buy_date": "2024-10-16T00:00:00+00:00",
+      "dividend_net": 2.4939999999999998,
+      "yield_value": 5.63,
+      "close_price": 44.21,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-06-10T00:00:00+00:00",
+      "payment_date": "2024-07-16T00:00:00+00:00",
+      "declared_date": "2024-05-30T00:00:00+00:00",
+      "last_buy_date": "2024-06-07T00:00:00+00:00",
+      "dividend_net": 2.752,
+      "yield_value": 4.9,
+      "close_price": 56.74,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "NLMK": [
+    {
+      "record_date": "2024-05-27T00:00:00+00:00",
+      "payment_date": "2024-07-02T00:00:00+00:00",
+      "declared_date": "2024-05-14T00:00:00+00:00",
+      "last_buy_date": "2024-05-24T00:00:00+00:00",
+      "dividend_net": 25.43,
+      "yield_value": 9.96,
+      "close_price": 253.34,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "CHMF": [
+    {
+      "record_date": "2024-12-17T00:00:00+00:00",
+      "payment_date": "2024-12-31T00:00:00+00:00",
+      "declared_date": "2024-12-15T00:00:00+00:00",
+      "last_buy_date": "2024-12-16T00:00:00+00:00",
+      "dividend_net": 49.06,
+      "yield_value": 4.49,
+      "close_price": 1066.8,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-09-10T00:00:00+00:00",
+      "payment_date": "2024-10-15T00:00:00+00:00",
+      "declared_date": "2024-08-30T00:00:00+00:00",
+      "last_buy_date": "2024-09-09T00:00:00+00:00",
+      "dividend_net": 31.06,
+      "yield_value": 2.51,
+      "close_price": 1294.8,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-06-18T00:00:00+00:00",
+      "payment_date": "2024-07-23T00:00:00+00:00",
+      "declared_date": "2024-06-07T00:00:00+00:00",
+      "last_buy_date": "2024-06-17T00:00:00+00:00",
+      "dividend_net": 191.51,
+      "yield_value": 10.41,
+      "close_price": 1840.2,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-06-18T00:00:00+00:00",
+      "payment_date": "2024-07-23T00:00:00+00:00",
+      "declared_date": "2024-06-07T00:00:00+00:00",
+      "last_buy_date": "2024-06-17T00:00:00+00:00",
+      "dividend_net": 38.3,
+      "yield_value": 2.08,
+      "close_price": 1840.2,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "RUAL": [],
+  "ENPG": [],
+  "PLZL": [
+    {
+      "record_date": "2026-05-18T00:00:00+00:00",
+      "payment_date": "2026-06-01T00:00:00+00:00",
+      "declared_date": "2026-05-16T00:00:00+00:00",
+      "last_buy_date": "2026-05-15T00:00:00+00:00",
+      "dividend_net": 56.8,
+      "yield_value": 2.7199999999999998,
+      "close_price": 2084.8,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-12-22T00:00:00+00:00",
+      "payment_date": "2025-12-24T00:00:00+00:00",
+      "declared_date": "2025-12-20T00:00:00+00:00",
+      "last_buy_date": "2025-12-19T00:00:00+00:00",
+      "dividend_net": 36.0,
+      "yield_value": 1.58,
+      "close_price": 2292.4,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-10-13T00:00:00+00:00",
+      "payment_date": "2025-10-27T00:00:00+00:00",
+      "declared_date": "2025-10-11T00:00:00+00:00",
+      "last_buy_date": "2025-10-10T00:00:00+00:00",
+      "dividend_net": 70.85,
+      "yield_value": 3.03,
+      "close_price": 2274.2,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-04-25T00:00:00+00:00",
+      "payment_date": "2025-05-09T00:00:00+00:00",
+      "declared_date": "2025-04-23T00:00:00+00:00",
+      "last_buy_date": "2025-04-24T00:00:00+00:00",
+      "dividend_net": 73.0,
+      "yield_value": 3.81,
+      "close_price": 1898.4,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-12-13T00:00:00+00:00",
+      "payment_date": "2024-12-27T00:00:00+00:00",
+      "declared_date": "2024-12-11T00:00:00+00:00",
+      "last_buy_date": "2024-12-12T00:00:00+00:00",
+      "dividend_net": 130.18,
+      "yield_value": 8.71,
+      "close_price": 14725.0,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "ALRS": [
+    {
+      "record_date": "2024-10-19T00:00:00+00:00",
+      "payment_date": "2024-11-01T00:00:00+00:00",
+      "declared_date": "2024-10-16T00:00:00+00:00",
+      "last_buy_date": "2024-10-17T00:00:00+00:00",
+      "dividend_net": 2.49,
+      "yield_value": 4.54,
+      "close_price": 54.15,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-05-31T00:00:00+00:00",
+      "payment_date": "2024-07-08T00:00:00+00:00",
+      "declared_date": "2024-05-20T00:00:00+00:00",
+      "last_buy_date": "2024-05-30T00:00:00+00:00",
+      "dividend_net": 2.02,
+      "yield_value": 2.5300000000000002,
+      "close_price": 78.85,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-10-18T00:00:00+00:00",
+      "payment_date": "2023-11-01T00:00:00+00:00",
+      "declared_date": "2023-10-16T00:00:00+00:00",
+      "last_buy_date": "2023-10-17T00:00:00+00:00",
+      "dividend_net": 3.77,
+      "yield_value": 4.9,
+      "close_price": 77.03,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    }
+  ],
+  "UGLD": [],
+  "SELG": [
+    {
+      "record_date": "2024-10-11T00:00:00+00:00",
+      "payment_date": "2024-10-25T00:00:00+00:00",
+      "declared_date": "2024-10-09T00:00:00+00:00",
+      "last_buy_date": "2024-10-10T00:00:00+00:00",
+      "dividend_net": 4.0,
+      "yield_value": 7.06,
+      "close_price": 56.53,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-06-15T00:00:00+00:00",
+      "payment_date": "2024-07-19T00:00:00+00:00",
+      "declared_date": "2024-06-04T00:00:00+00:00",
+      "last_buy_date": "2024-06-13T00:00:00+00:00",
+      "dividend_net": 2.0,
+      "yield_value": 2.83,
+      "close_price": 69.83,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-12-03T00:00:00+00:00",
+      "payment_date": "2024-01-15T00:00:00+00:00",
+      "declared_date": "2023-11-22T00:00:00+00:00",
+      "last_buy_date": "2023-11-30T00:00:00+00:00",
+      "dividend_net": 2.0,
+      "yield_value": 2.88,
+      "close_price": 68.25,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "MTLR": [],
+  "RASP": [],
+  "TRMK": [
+    {
+      "record_date": "2024-06-04T00:00:00+00:00",
+      "payment_date": "2024-07-10T00:00:00+00:00",
+      "declared_date": "2024-05-24T00:00:00+00:00",
+      "last_buy_date": "2024-06-03T00:00:00+00:00",
+      "dividend_net": 9.51,
+      "yield_value": 5.17,
+      "close_price": 187.02,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-09-05T00:00:00+00:00",
+      "payment_date": "2023-09-19T00:00:00+00:00",
+      "declared_date": "2023-09-03T00:00:00+00:00",
+      "last_buy_date": "2023-09-04T00:00:00+00:00",
+      "dividend_net": 13.45,
+      "yield_value": 5.14,
+      "close_price": 271.0,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    }
+  ],
+  "YDEX": [
+    {
+      "record_date": "2026-04-27T00:00:00+00:00",
+      "payment_date": "2026-04-29T00:00:00+00:00",
+      "declared_date": "2026-04-25T00:00:00+00:00",
+      "last_buy_date": "2026-04-24T00:00:00+00:00",
+      "dividend_net": 110.0,
+      "yield_value": 2.5300000000000002,
+      "close_price": 4251.5,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-09-29T00:00:00+00:00",
+      "payment_date": "2025-10-02T00:00:00+00:00",
+      "declared_date": "2025-09-27T00:00:00+00:00",
+      "last_buy_date": "2025-09-26T00:00:00+00:00",
+      "dividend_net": 80.0,
+      "yield_value": 1.96,
+      "close_price": 4103.5,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-04-28T00:00:00+00:00",
+      "payment_date": "2025-05-12T00:00:00+00:00",
+      "declared_date": "2025-04-26T00:00:00+00:00",
+      "last_buy_date": "2025-04-25T00:00:00+00:00",
+      "dividend_net": 80.0,
+      "yield_value": 1.8599999999999999,
+      "close_price": 4356.0,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-09-20T00:00:00+00:00",
+      "payment_date": "2024-10-04T00:00:00+00:00",
+      "declared_date": "2024-09-18T00:00:00+00:00",
+      "last_buy_date": "2024-09-19T00:00:00+00:00",
+      "dividend_net": 80.0,
+      "yield_value": 1.98,
+      "close_price": 4150.0,
+      "regularity": "Irreg",
+      "dividend_type": ""
+    }
+  ],
+  "MTSS": [
+    {
+      "record_date": "2025-07-07T00:00:00+00:00",
+      "payment_date": "2025-07-21T00:00:00+00:00",
+      "declared_date": "2025-07-05T00:00:00+00:00",
+      "last_buy_date": "2025-07-04T00:00:00+00:00",
+      "dividend_net": 35.0,
+      "yield_value": 15.21,
+      "close_price": 227.45,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-16T00:00:00+00:00",
+      "payment_date": "2024-07-29T00:00:00+00:00",
+      "declared_date": "2024-07-06T00:00:00+00:00",
+      "last_buy_date": "2024-07-15T00:00:00+00:00",
+      "dividend_net": 35.0,
+      "yield_value": 12.89,
+      "close_price": 262.1,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-06-29T00:00:00+00:00",
+      "payment_date": "2023-07-13T00:00:00+00:00",
+      "declared_date": "2023-06-18T00:00:00+00:00",
+      "last_buy_date": "2023-06-28T00:00:00+00:00",
+      "dividend_net": 34.29,
+      "yield_value": 9.91,
+      "close_price": 346.05,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    }
+  ],
+  "RTKM": [
+    {
+      "record_date": "2025-08-13T00:00:00+00:00",
+      "payment_date": "2025-08-27T00:00:00+00:00",
+      "declared_date": "2025-08-11T00:00:00+00:00",
+      "last_buy_date": "2025-08-12T00:00:00+00:00",
+      "dividend_net": 2.71,
+      "yield_value": 3.83,
+      "close_price": 71.55,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-09-27T00:00:00+00:00",
+      "payment_date": "2024-10-11T00:00:00+00:00",
+      "declared_date": "2024-09-25T00:00:00+00:00",
+      "last_buy_date": "2024-09-26T00:00:00+00:00",
+      "dividend_net": 6.06,
+      "yield_value": 7.5600000000000005,
+      "close_price": 80.0,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-12-01T00:00:00+00:00",
+      "payment_date": "2023-12-11T00:00:00+00:00",
+      "declared_date": "2023-11-21T00:00:00+00:00",
+      "last_buy_date": "2023-11-30T00:00:00+00:00",
+      "dividend_net": 5.4465,
+      "yield_value": 6.66,
+      "close_price": 81.3,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    }
+  ],
+  "VKCO": [],
+  "HEAD": [
+    {
+      "record_date": "2026-05-12T00:00:00+00:00",
+      "payment_date": "2026-05-26T00:00:00+00:00",
+      "declared_date": "2026-05-10T00:00:00+00:00",
+      "last_buy_date": "2026-05-11T00:00:00+00:00",
+      "dividend_net": 233.0,
+      "yield_value": 7.98,
+      "close_price": 2920.0,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-09-27T00:00:00+00:00",
+      "payment_date": "2025-10-02T00:00:00+00:00",
+      "declared_date": "2025-09-24T00:00:00+00:00",
+      "last_buy_date": "2025-09-25T00:00:00+00:00",
+      "dividend_net": 233.0,
+      "yield_value": 6.4,
+      "close_price": 3641.0,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-12-17T00:00:00+00:00",
+      "payment_date": "2024-12-31T00:00:00+00:00",
+      "declared_date": "2024-12-15T00:00:00+00:00",
+      "last_buy_date": "2024-12-16T00:00:00+00:00",
+      "dividend_net": 907.0,
+      "yield_value": 22.62,
+      "close_price": 3982.0,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "MGNT": [],
+  "OZON": [
+    {
+      "record_date": "2026-05-26T00:00:00+00:00",
+      "payment_date": "2026-06-09T00:00:00+00:00",
+      "declared_date": "2026-05-24T00:00:00+00:00",
+      "last_buy_date": "2026-05-25T00:00:00+00:00",
+      "dividend_net": 70.0,
+      "yield_value": 1.6800000000000002,
+      "close_price": 4164.0,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-12-22T00:00:00+00:00",
+      "payment_date": "2025-12-25T00:00:00+00:00",
+      "declared_date": "2025-12-20T00:00:00+00:00",
+      "last_buy_date": "2025-12-19T00:00:00+00:00",
+      "dividend_net": 143.55,
+      "yield_value": 3.39,
+      "close_price": 4192.0,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "PHOR": [],
+  "LENT": [],
+  "AFKS": [
+    {
+      "record_date": "2024-07-17T00:00:00+00:00",
+      "payment_date": "2024-08-21T00:00:00+00:00",
+      "declared_date": "2024-06-28T00:00:00+00:00",
+      "last_buy_date": "2024-07-16T00:00:00+00:00",
+      "dividend_net": 0.52,
+      "yield_value": 2.36,
+      "close_price": 21.935,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-19T00:00:00+00:00",
+      "payment_date": "2023-08-02T00:00:00+00:00",
+      "declared_date": "2023-07-16T00:00:00+00:00",
+      "last_buy_date": "2023-07-18T00:00:00+00:00",
+      "dividend_net": 0.41,
+      "yield_value": 2.29,
+      "close_price": 17.9,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "PIKK": [],
+  "LSRG": [
+    {
+      "record_date": "2025-04-29T00:00:00+00:00",
+      "payment_date": "2025-05-13T00:00:00+00:00",
+      "declared_date": "2025-04-27T00:00:00+00:00",
+      "last_buy_date": "2025-04-28T00:00:00+00:00",
+      "dividend_net": 78.0,
+      "yield_value": 9.38,
+      "close_price": 872.4,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-05-02T00:00:00+00:00",
+      "payment_date": "2024-06-10T00:00:00+00:00",
+      "declared_date": "2024-04-17T00:00:00+00:00",
+      "last_buy_date": "2024-04-30T00:00:00+00:00",
+      "dividend_net": 100.0,
+      "yield_value": 8.92,
+      "close_price": 1139.6,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-07T00:00:00+00:00",
+      "payment_date": "2023-07-21T00:00:00+00:00",
+      "declared_date": "2023-07-04T00:00:00+00:00",
+      "last_buy_date": "2023-07-06T00:00:00+00:00",
+      "dividend_net": 78.0,
+      "yield_value": 9.87,
+      "close_price": 790.6,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "IRAO": [
+    {
+      "record_date": "2026-06-09T00:00:00+00:00",
+      "payment_date": "2026-06-23T00:00:00+00:00",
+      "declared_date": "2026-06-07T00:00:00+00:00",
+      "last_buy_date": "2026-06-08T00:00:00+00:00",
+      "dividend_net": 0.321425305,
+      "yield_value": 10.27,
+      "close_price": 3.13,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-06-09T00:00:00+00:00",
+      "payment_date": "2025-06-25T00:00:00+00:00",
+      "declared_date": "2025-06-07T00:00:00+00:00",
+      "last_buy_date": "2025-06-06T00:00:00+00:00",
+      "dividend_net": 0.353756516,
+      "yield_value": 9.59,
+      "close_price": 3.6755,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-06-03T00:00:00+00:00",
+      "payment_date": "2024-07-09T00:00:00+00:00",
+      "declared_date": "2024-05-22T00:00:00+00:00",
+      "last_buy_date": "2024-05-31T00:00:00+00:00",
+      "dividend_net": 0.325999263,
+      "yield_value": 7.6899999999999995,
+      "close_price": 4.0395,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-05-30T00:00:00+00:00",
+      "payment_date": "2023-07-04T00:00:00+00:00",
+      "declared_date": "2023-05-19T00:00:00+00:00",
+      "last_buy_date": "2023-05-29T00:00:00+00:00",
+      "dividend_net": 0.283655318,
+      "yield_value": 6.54,
+      "close_price": 4.339,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ],
+  "SMLT": [],
+  "NMTP": [
+    {
+      "record_date": "2025-07-14T00:00:00+00:00",
+      "payment_date": "2025-07-28T00:00:00+00:00",
+      "declared_date": "2025-07-12T00:00:00+00:00",
+      "last_buy_date": "2025-07-11T00:00:00+00:00",
+      "dividend_net": 0.9573,
+      "yield_value": 10.53,
+      "close_price": 9.12,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-10T00:00:00+00:00",
+      "payment_date": "2024-08-14T00:00:00+00:00",
+      "declared_date": "2024-06-28T00:00:00+00:00",
+      "last_buy_date": "2024-07-09T00:00:00+00:00",
+      "dividend_net": 0.772,
+      "yield_value": 8.06,
+      "close_price": 9.185,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-12T00:00:00+00:00",
+      "payment_date": "2023-07-26T00:00:00+00:00",
+      "declared_date": "2023-07-09T00:00:00+00:00",
+      "last_buy_date": "2023-07-11T00:00:00+00:00",
+      "dividend_net": 0.798,
+      "yield_value": 8.28,
+      "close_price": 9.635,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "FESH": [],
+  "HYDR": [
+    {
+      "record_date": "2023-07-11T00:00:00+00:00",
+      "payment_date": "2023-07-25T00:00:00+00:00",
+      "declared_date": "2023-06-30T00:00:00+00:00",
+      "last_buy_date": "2023-07-10T00:00:00+00:00",
+      "dividend_net": 0.0502548,
+      "yield_value": 6.01,
+      "close_price": 0.836,
+      "regularity": "Quarter",
+      "dividend_type": ""
+    }
+  ],
+  "FEES": [],
+  "MSNG": [
+    {
+      "record_date": "2024-07-09T00:00:00+00:00",
+      "payment_date": "2024-08-13T00:00:00+00:00",
+      "declared_date": "2024-06-25T00:00:00+00:00",
+      "last_buy_date": "2024-07-08T00:00:00+00:00",
+      "dividend_net": 0.16038,
+      "yield_value": 5.23,
+      "close_price": 3.044,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-04T00:00:00+00:00",
+      "payment_date": "2023-07-18T00:00:00+00:00",
+      "declared_date": "2023-07-01T00:00:00+00:00",
+      "last_buy_date": "2023-07-03T00:00:00+00:00",
+      "dividend_net": 0.18652,
+      "yield_value": 6.0,
+      "close_price": 3.1105,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "UPRO": [],
+  "OGKB": [
+    {
+      "record_date": "2025-11-05T00:00:00+00:00",
+      "payment_date": "2025-11-19T00:00:00+00:00",
+      "declared_date": "2025-11-02T00:00:00+00:00",
+      "last_buy_date": "2025-11-03T00:00:00+00:00",
+      "dividend_net": 0.059816701,
+      "yield_value": 14.42,
+      "close_price": 0.4178,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-10T00:00:00+00:00",
+      "payment_date": "2023-07-24T00:00:00+00:00",
+      "declared_date": "2023-07-05T00:00:00+00:00",
+      "last_buy_date": "2023-07-07T00:00:00+00:00",
+      "dividend_net": 0.0580758,
+      "yield_value": 8.21,
+      "close_price": 0.7071,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "NKNC": [
+    {
+      "record_date": "2025-07-01T00:00:00+00:00",
+      "payment_date": "2025-07-15T00:00:00+00:00",
+      "declared_date": "2025-06-29T00:00:00+00:00",
+      "last_buy_date": "2025-06-30T00:00:00+00:00",
+      "dividend_net": 2.93,
+      "yield_value": 3.51,
+      "close_price": 85.35,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-07-09T00:00:00+00:00",
+      "payment_date": "2024-08-13T00:00:00+00:00",
+      "declared_date": "2024-06-28T00:00:00+00:00",
+      "last_buy_date": "2024-07-08T00:00:00+00:00",
+      "dividend_net": 2.94,
+      "yield_value": 3.13,
+      "close_price": 93.0,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-07-11T00:00:00+00:00",
+      "payment_date": "2023-07-25T00:00:00+00:00",
+      "declared_date": "2023-07-08T00:00:00+00:00",
+      "last_buy_date": "2023-07-10T00:00:00+00:00",
+      "dividend_net": 1.49,
+      "yield_value": 1.22,
+      "close_price": 121.9,
+      "regularity": "Annual",
+      "dividend_type": ""
+    }
+  ],
+  "KAZT": [
+    {
+      "record_date": "2025-09-23T00:00:00+00:00",
+      "payment_date": "2025-10-07T00:00:00+00:00",
+      "declared_date": "2025-09-21T00:00:00+00:00",
+      "last_buy_date": "2025-09-22T00:00:00+00:00",
+      "dividend_net": 4.0,
+      "yield_value": 0.86,
+      "close_price": 461.6,
+      "regularity": "Semi-Anl",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2025-05-26T00:00:00+00:00",
+      "payment_date": "2025-06-09T00:00:00+00:00",
+      "declared_date": "2025-05-24T00:00:00+00:00",
+      "last_buy_date": "2025-05-23T00:00:00+00:00",
+      "dividend_net": 2.5,
+      "yield_value": 0.53,
+      "close_price": 469.0,
+      "regularity": "Annual",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-12-03T00:00:00+00:00",
+      "payment_date": "2024-12-17T00:00:00+00:00",
+      "declared_date": "2024-12-01T00:00:00+00:00",
+      "last_buy_date": "2024-12-02T00:00:00+00:00",
+      "dividend_net": 7.0,
+      "yield_value": 1.65,
+      "close_price": 433.0,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2024-05-27T00:00:00+00:00",
+      "payment_date": "2024-07-02T00:00:00+00:00",
+      "declared_date": "2024-05-16T00:00:00+00:00",
+      "last_buy_date": "2024-05-24T00:00:00+00:00",
+      "dividend_net": 15.0,
+      "yield_value": 2.41,
+      "close_price": 606.8,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-12-12T00:00:00+00:00",
+      "payment_date": "2024-01-24T00:00:00+00:00",
+      "declared_date": "2023-12-01T00:00:00+00:00",
+      "last_buy_date": "2023-12-11T00:00:00+00:00",
+      "dividend_net": 14.0,
+      "yield_value": 2.02,
+      "close_price": 676.8,
+      "regularity": "",
+      "dividend_type": ""
+    },
+    {
+      "record_date": "2023-05-22T00:00:00+00:00",
+      "payment_date": "2023-06-27T00:00:00+00:00",
+      "declared_date": "2023-05-11T00:00:00+00:00",
+      "last_buy_date": "2023-05-19T00:00:00+00:00",
+      "dividend_net": 35.0,
+      "yield_value": 5.3,
+      "close_price": 661.0,
+      "regularity": "",
+      "dividend_type": ""
+    }
+  ]
+}

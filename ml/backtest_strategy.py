@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import numpy as np
 import matplotlib.pyplot as plt
 
+from ml.decision_layer import SIG_BUY, SIG_SELL
+
 MAX_DAILY_MOVE = 0.15       # 15% для 5-барного окна
 MIN_TRADE_MOVE = 0.001
 ANNUALIZER     = 252
@@ -475,6 +477,123 @@ def simulate_intraday_refinement(
 
 
 # ────────────────────────────────────────────────────────────
+# Sprint 8.3: Path-aware execution simulator
+# ────────────────────────────────────────────────────────────
+
+def simulate_path_aware_strategy(
+    decision_signal:   np.ndarray,    # [N] 0=BUY, 1=HOLD, 2=SELL
+    decision_conf:     np.ndarray,    # [N]
+    ohlc_pred_pct:     np.ndarray,    # [N, 4+] ΔO ΔH ΔL ΔC — денормализованные
+    ohlc_true_pct:     np.ndarray,    # [N, 4+]
+    y_true:            np.ndarray,    # [N]
+    high_first_prob:   np.ndarray,    # [N] P(high before low) из HighLowOrderHead
+    fee:               float = 0.001,
+    max_position_pct:  float = 0.02,
+    high_first_thr:    float = 0.55,  # порог для high_first режима
+    low_first_thr:     float = 0.45,  # порог для low_first режима (round-trip)
+):
+    """Sprint 8.3: path-aware execution использует high_first_prob.
+
+    Execution modes:
+      low_first  (hf_prob < low_first_thr):  entry at pred_low, exit at pred_high (round-trip).
+      high_first (hf_prob > high_first_thr): entry at open, exit at pred_high (carry overnight).
+      uncertain  (между порогами):           skip — HOLD.
+    """
+    trades = []
+    n_low_first = n_high_first = n_uncertain = n_hold = 0
+
+    for t in range(len(decision_signal)):
+        sig = int(decision_signal[t])
+        if sig not in (SIG_BUY, SIG_SELL):
+            n_hold += 1
+            continue
+
+        hf_p = float(high_first_prob[t])
+        conf = float(np.clip(decision_conf[t], 0.0, 1.0))
+        position_size = max_position_pct * max(conf, 1e-3)
+
+        real_H = float(ohlc_true_pct[t, 1])
+        real_L = float(ohlc_true_pct[t, 2])
+        real_C = float(ohlc_true_pct[t, 3])
+
+        pred_H = float(ohlc_pred_pct[t, 1])   # ΔHigh (положительный)
+        pred_L = float(ohlc_pred_pct[t, 2])   # ΔLow  (отрицательный)
+
+        if hf_p < low_first_thr:
+            # low_first: ожидаем сначала low, потом high
+            # BUY: entry = pred_low, exit = pred_high (round-trip in day)
+            n_low_first += 1
+            if sig == SIG_BUY:
+                entry_delta = pred_L     # лимит вниз от close
+                tp_price    = pred_H
+                entry_hit   = real_L <= entry_delta  # low дошёл до входа
+                tp_hit      = entry_hit and real_H >= tp_price
+                if not entry_hit:
+                    continue  # лимитка не исполнена
+                gross = (tp_price if tp_hit else real_C) - entry_delta
+                exit_t = 'TP' if tp_hit else 'close'
+            else:  # SELL
+                entry_delta = pred_H
+                tp_price    = pred_L
+                entry_hit   = real_H >= entry_delta
+                tp_hit      = entry_hit and real_L <= tp_price
+                if not entry_hit:
+                    continue
+                gross = entry_delta - (tp_price if tp_hit else real_C)
+                exit_t = 'TP' if tp_hit else 'close'
+
+        elif hf_p > high_first_thr:
+            # high_first: ожидаем сначала high, потом low → BUY на следующий день
+            n_high_first += 1
+            if sig == SIG_BUY:
+                # entry at open (delta=0), exit at pred_high (TP) или close
+                entry_delta = 0.0
+                tp_price    = pred_H
+                tp_hit      = real_H >= tp_price
+                gross = (tp_price if tp_hit else real_C) - entry_delta
+                exit_t = 'TP' if tp_hit else 'close'
+            else:  # SELL short при high_first — entry at open, TP at pred_low
+                entry_delta = 0.0
+                tp_price    = pred_L
+                tp_hit      = real_L <= tp_price
+                gross = entry_delta - (tp_price if tp_hit else real_C)
+                exit_t = 'TP' if tp_hit else 'close'
+        else:
+            # Неопределённость → HOLD
+            n_uncertain += 1
+            continue
+
+        net_pnl_pct = gross - 2 * fee
+        pnl_capital = net_pnl_pct * position_size
+        if abs(pnl_capital) > 0.05:
+            continue  # аномальный PnL — отбрасываем
+
+        trades.append({
+            't':           int(t),
+            'direction':   'LONG' if sig == SIG_BUY else 'SHORT',
+            'signal':      conf,
+            'size':        float(position_size),
+            'entry_delta': entry_delta,
+            'gross_pnl':   float(gross),
+            'net_pnl_pct': float(net_pnl_pct),
+            'pnl_capital': float(pnl_capital),
+            'exit':        exit_t,
+            'true_cls':    int(y_true[t]),
+            'mode':        'low_first' if hf_p < low_first_thr else 'high_first',
+        })
+
+    diag = {
+        'n_low_first':  n_low_first,
+        'n_high_first': n_high_first,
+        'n_uncertain':  n_uncertain,
+        'n_hold':       n_hold,
+    }
+    print(f'  [path-aware] low_first={n_low_first} high_first={n_high_first} '
+          f'uncertain={n_uncertain} hold={n_hold}')
+    return trades, diag
+
+
+# ────────────────────────────────────────────────────────────
 # Анализ
 # ────────────────────────────────────────────────────────────
 
@@ -546,15 +665,24 @@ def main():
     parser.add_argument('--days', type=int, default=None)
     parser.add_argument('--future-bars', type=int, default=5)
     parser.add_argument('--n-tickers', type=int, default=20)
+    # Sprint 8: новые режимы
+    parser.add_argument('--intraday',   action='store_true',
+                        help='Sprint 8.4: intraday cancellation через hourly predictions')
+    parser.add_argument('--path-aware', action='store_true',
+                        help='Sprint 8.3: path-aware execution (требует high_first_prob в npz)')
     args = parser.parse_args()
 
-    data = np.load(args.preds)
+    data = np.load(args.preds, allow_pickle=False)
     p_dir     = data['dir_prob']
     cls_probs = data['cls_probs']
     ohlc_pred = data['ohlc_pred']
     ohlc_true = data['ohlc_test']
     y_true    = data['y_test']
-    atr_ratio = data['atr_ratio'] if 'atr_ratio' in data else np.full(len(p_dir), 0.018)
+    atr_ratio = data['atr_ratio'] if 'atr_ratio' in data.files else np.full(len(p_dir), 0.018)
+
+    # Sprint 5 bull=OFF: загружаем regime если присутствует в npz
+    _regime_key = 'test_regime' if 'test_regime' in data.files else ('regime' if 'regime' in data.files else None)
+    _regime_arr = data[_regime_key] if _regime_key else None
 
     # Sprint 2: decision-aware ключи (опционально)
     has_decision = 'decision_signal' in data.files
@@ -566,6 +694,47 @@ def main():
               f'(BUY={int((decision_signal==0).sum())} '
               f'HOLD={int((decision_signal==1).sum())} '
               f'SELL={int((decision_signal==2).sum())})')
+        # Sprint 5 bull=OFF: перевести bull-сэмплы в HOLD
+        if _regime_arr is not None:
+            _bull = (_regime_arr == 2)
+            decision_signal = decision_signal.copy()
+            decision_signal[_bull] = 1
+            print(f'  ✓ bull=OFF: {int(_bull.sum())} bull→HOLD  '
+                  f'(BUY={int((decision_signal==0).sum())} '
+                  f'SELL={int((decision_signal==2).sum())} остались)')
+
+    # Sprint 8.1: extremes (pred_high, pred_low[, high_low_logit]) — опционально
+    extremes_pred = data['extremes_pred'] if 'extremes_pred' in data.files else None
+    if extremes_pred is not None:
+        print(f'  ✓ Sprint 8.1: extremes_pred присутствует shape={extremes_pred.shape}  '
+              f'range_mean={float((extremes_pred[:,0] - extremes_pred[:,1]).mean()):.4f}')
+        # Sprint 8.2: если extremes_pred имеет 3 столбца, извлекаем high_first_prob
+        if extremes_pred.shape[1] >= 3 and 'high_first_prob' not in data.files:
+            _hf = (1.0 / (1.0 + np.exp(-extremes_pred[:, 2].astype(np.float64)))).astype(np.float32)
+            data = dict(data)
+            data['high_first_prob'] = _hf
+            print(f'  ✓ Sprint 8.2: high_first_prob извлечён из extremes_pred[:,2]')
+        # Если есть extremes и econ-ключи — пересчитаем decision с учётом extremes
+        if has_decision and 'fill_prob' in data.files and 'edge_pred' in data.files:
+            from ml.decision_layer import DecisionLayer, costs_from_config
+            dl_ext = DecisionLayer(costs_from_config())
+            dec_ext = dl_ext.decide_numpy(
+                dir_prob  = p_dir,
+                mfe_mae   = mfe_mae_pred,
+                fill_prob = data['fill_prob'],
+                edge_pred = data['edge_pred'],
+                extremes  = extremes_pred,
+            )
+            decision_signal_ext = dec_ext['signal']
+            decision_conf_ext   = dec_ext['confidence']
+            # bull=OFF для ext сигнала
+            if _regime_arr is not None:
+                decision_signal_ext = decision_signal_ext.copy()
+                decision_signal_ext[_regime_arr == 2] = 1
+            n_buy_ext  = int((decision_signal_ext == 0).sum())
+            n_hold_ext = int((decision_signal_ext == 1).sum())
+            n_sell_ext = int((decision_signal_ext == 2).sum())
+            print(f'  ✓ Decision с extremes: BUY={n_buy_ext} HOLD={n_hold_ext} SELL={n_sell_ext}')
 
     total_samples = len(p_dir)
 
@@ -644,6 +813,111 @@ def main():
             dec_trades_co, label='E2_decision_close_only',
             trading_days=trading_days, total_samples=total_samples, diag=dec_diag_co)
         all_trades['E2_decision_close_only'] = dec_trades_co
+
+        # E3 Sprint 8.1: decision с extremes (если доступны)
+        if extremes_pred is not None and 'decision_signal_ext' in dir():
+            print(f'\n{"═"*70}\n  E3. DECISION + EXTREMES (Sprint 8.1)\n{"═"*70}')
+            e3_trades, e3_diag = simulate_decision_strategy(
+                decision_signal=decision_signal_ext,
+                decision_conf=decision_conf_ext,
+                mfe_mae_pred=mfe_mae_pred,
+                ohlc_true_pct=ohlc_true_pct,
+                y_true=y_true,
+                use_predicted_tp_sl=False,
+            )
+            stats['E3_extremes_boost'] = analyze_trades(
+                e3_trades, label='E3_extremes_boost',
+                trading_days=trading_days, total_samples=total_samples, diag=e3_diag)
+            all_trades['E3_extremes_boost'] = e3_trades
+
+    # ── Sprint 8.3: Path-aware execution ───────────────────────────────
+    if args.path_aware and has_decision:
+        print(f'\n{"═"*70}\n  F. PATH-AWARE EXECUTION (Sprint 8.3)\n{"═"*70}')
+        if 'high_first_prob' not in data.files:
+            print('  Пропуск: high_first_prob не найден в npz.')
+            print('  Требуется rebuild V3 с HighLowOrderHead (Sprint 8.2).')
+        else:
+            hf_prob = data['high_first_prob']
+            f_trades, f_diag = simulate_path_aware_strategy(
+                decision_signal=decision_signal,
+                decision_conf=decision_conf,
+                ohlc_pred_pct=ohlc_pred_pct,
+                ohlc_true_pct=ohlc_true_pct,
+                y_true=y_true,
+                high_first_prob=hf_prob,
+            )
+            stats['F_path_aware'] = analyze_trades(
+                f_trades, label='F_path_aware',
+                trading_days=trading_days, total_samples=total_samples, diag=f_diag)
+            all_trades['F_path_aware'] = f_trades
+
+    # ── Sprint 8.4: Intraday cancellation ──────────────────────────────
+    if args.intraday and has_decision:
+        print(f'\n{"═"*70}\n  G. INTRADAY CANCELLATION (Sprint 8.4)\n{"═"*70}')
+        hourly_npz = 'ml/ensemble/hourly_test_predictions.npz'
+        meta_npz   = 'ml/ensemble/meta_features.npz'
+        if not os.path.exists(hourly_npz) and not os.path.exists(meta_npz):
+            print('  Пропуск: hourly_test_predictions.npz и meta_features.npz не найдены.')
+            print('  Запустите py -m ml.meta_ensemble для генерации hourly предсказаний.')
+        else:
+            # Применяем простой фильтр: cancel BUY если hourly_dir_prob < 0.4
+            # для соответствующего (date, ticker) из hourly npz
+            h_path = hourly_npz if os.path.exists(hourly_npz) else meta_npz
+            try:
+                hd = np.load(h_path, allow_pickle=False)
+                print(f'  Загружено: {h_path}  shape keys: {list(hd.files)[:6]}')
+
+                test_dates    = data['test_dates']    if 'test_dates'    in data.files else None
+                test_tickers  = data['test_tickers']  if 'test_tickers'  in data.files else None
+                hourly_dates  = hd['dates']   if 'dates'   in hd.files else None
+                hourly_tickers= hd['tickers'] if 'tickers' in hd.files else None
+                hourly_dir    = hd['dir_prob'] if 'dir_prob' in hd.files else None
+
+                if (test_dates is not None and test_tickers is not None
+                        and hourly_dates is not None and hourly_tickers is not None
+                        and hourly_dir is not None):
+                    # Строим словарь (date, ticker) → hourly dir_prob
+                    key_to_hdir = {
+                        (str(hourly_dates[i]), str(hourly_tickers[i])): float(hourly_dir[i])
+                        for i in range(len(hourly_dates))
+                    }
+                    cancel_mask = np.zeros(len(decision_signal), dtype=bool)
+                    for i in range(len(decision_signal)):
+                        sig = int(decision_signal[i])
+                        if sig == 1:
+                            continue
+                        key = (str(test_dates[i]), str(test_tickers[i]))
+                        h_prob = key_to_hdir.get(key, None)
+                        if h_prob is None:
+                            continue
+                        # Отменяем BUY если hourly говорит DOWN (<0.4)
+                        if sig == 0 and h_prob < 0.4:
+                            cancel_mask[i] = True
+                        # Отменяем SELL если hourly говорит UP (>0.6)
+                        elif sig == 2 and h_prob > 0.6:
+                            cancel_mask[i] = True
+
+                    dec_sig_filtered = decision_signal.copy()
+                    dec_sig_filtered[cancel_mask] = 1   # HOLD
+                    n_cancelled = int(cancel_mask.sum())
+                    print(f'  Отменено сделок: {n_cancelled} / {int((decision_signal!=1).sum())}')
+
+                    g_trades, g_diag = simulate_decision_strategy(
+                        decision_signal=dec_sig_filtered,
+                        decision_conf=decision_conf,
+                        mfe_mae_pred=mfe_mae_pred,
+                        ohlc_true_pct=ohlc_true_pct,
+                        y_true=y_true,
+                        use_predicted_tp_sl=False,
+                    )
+                    stats['G_intraday_cancel'] = analyze_trades(
+                        g_trades, label='G_intraday_cancel',
+                        trading_days=trading_days, total_samples=total_samples, diag=g_diag)
+                    all_trades['G_intraday_cancel'] = g_trades
+                else:
+                    print('  Пропуск: не найдены поля dates/tickers/dir_prob в hourly npz.')
+            except Exception as e:
+                print(f'  Ошибка загрузки hourly: {e}')
 
     # Equity plot
     plt.figure(figsize=(14, 7))

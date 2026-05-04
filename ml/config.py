@@ -135,6 +135,13 @@ class MLConfig:
     # ── ATR-адаптивная разметка v3.4 ────────────────────────────
     label_atr_k: float = 0.3  # NEW: порог = atr_k * ATR(14) / close
 
+    # ── Sprint 7: Multi-objective val_metric (#10) ───────────────
+    # val_metric = dir_acc + alpha*dec_hit + beta*max(sharpe_proxy, 0)
+    # Подобраны через sprint7_sweep.py; beta держим низким —
+    # sharpe_proxy шумный на небольшом val-сете.
+    val_metric_alpha: float = 0.20   # вес hit_rate (торговая точность)
+    val_metric_beta:  float = 0.10   # вес sharpe_proxy (торговое качество)
+
     def __post_init__(self):
         if self.tickers is None:
             self.tickers = [

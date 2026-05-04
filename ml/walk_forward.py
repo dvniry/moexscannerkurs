@@ -181,10 +181,88 @@ def _find_best_per_regime(data: dict, mask_calib: np.ndarray) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════
+# B-22 fix: адаптивные quantile-based пороги per-fold
+# ══════════════════════════════════════════════════════════════════
+
+def _adaptive_quantile_thresholds(
+    data: dict,
+    mask_calib: np.ndarray,
+    *,
+    q_edge: float = 0.80,
+    q_dir:  float = 0.75,
+    floor_edge_ratio: float = 2.0,
+    floor_dir: float = 0.55,
+    floor_sell: float = 0.50,
+) -> dict[int, dict]:
+    """Считает пороги как quantile калибровочного распределения.
+
+    Гарантирует ~ (1 - q) coverage на калибровке независимо от absolute scale
+    edge/dir, что фиксит B-22 (фиксированные in-sample пороги дают 0.5% coverage
+    на OOS из-за shift распределения).
+
+    Возвращает {regime_id: {min_edge_ratio, min_dir_prob, min_sell_dir_prob, ...}}
+    в формате RegimeAwareDecisionLayer.
+    """
+    calib = {k: v[mask_calib] for k, v in data.items()}
+    cost = costs_from_config().roundtrip
+    out: dict[int, dict] = {}
+
+    # Per-regime thresholds + global fallback
+    for rid in (0, 1, 2):
+        rmask = (calib["regime"] == rid)
+        n_r = int(rmask.sum())
+        if n_r < 50:
+            # Слишком мало данных в этом режиме — fallback к B-15 default
+            out[rid] = {
+                "min_edge_ratio": 5.0, "min_dir_prob": 0.75,
+                "min_sell_dir_prob": 0.55, "min_fill_prob": 0.40, "min_rr": 1.2,
+            }
+            continue
+        # edge_pred[:,0] = long, [:,1] = short (см. decision_layer)
+        edge_long  = calib["edge_pred"][rmask, 0] / max(cost, 1e-9)
+        edge_short = calib["edge_pred"][rmask, 1] / max(cost, 1e-9)
+        dir_p = calib["dir_prob"][rmask]
+
+        # Берём максимум long/short — порог должен пропускать "сильнейшую сторону"
+        edge_combined = np.maximum(edge_long, edge_short)
+        thr_edge = float(np.quantile(edge_combined, q_edge))
+        thr_edge = max(thr_edge, floor_edge_ratio)
+
+        # dir_prob распределён на [0,1]; считаем порог для long-сетапов
+        thr_dir = float(np.quantile(dir_p, q_dir))
+        thr_dir = max(thr_dir, floor_dir)
+
+        # для SELL — quantile из (1 - dir_prob)
+        thr_sell = float(np.quantile(1.0 - dir_p, q_dir))
+        thr_sell = max(thr_sell, floor_sell)
+
+        out[rid] = {
+            "min_edge_ratio": thr_edge,
+            "min_dir_prob":   thr_dir,
+            "min_sell_dir_prob": thr_sell,
+            "min_fill_prob": 0.40,
+            "min_rr": 1.2,
+        }
+
+    # Sprint 5 stable insight: bull=OFF на всех фолдах. Сохраняем при адаптивных порогах.
+    out[2] = {
+        "min_edge_ratio": 99.0, "min_dir_prob": 0.99,
+        "min_sell_dir_prob": 0.99, "min_fill_prob": 0.99, "min_rr": 99.0,
+    }
+    out[-1] = {
+        "min_edge_ratio": 5.0, "min_dir_prob": 0.75,
+        "min_sell_dir_prob": 0.55, "min_fill_prob": 0.40, "min_rr": 1.2,
+    }
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════
 # Walk-forward orchestrator
 # ══════════════════════════════════════════════════════════════════
 
-def run_walk_forward(folds: int = 5, min_calib_frac: float = 0.30) -> list[dict]:
+def run_walk_forward(folds: int = 5, min_calib_frac: float = 0.30,
+                     adaptive_thresholds: bool = False,
+                     q_edge: float = 0.80, q_dir: float = 0.75) -> list[dict]:
     """Запускает K-fold walk-forward.
 
     folds:           число тестовых фолдов
@@ -278,9 +356,29 @@ def run_walk_forward(folds: int = 5, min_calib_frac: float = 0.30) -> list[dict]
         else:
             m_regime = None
 
+        # ── Strategy C (B-22): adaptive quantile thresholds per-fold ──
+        m_adaptive = None
+        if adaptive_thresholds and has_regime:
+            adapt = _adaptive_quantile_thresholds(data, mask_calib,
+                                                  q_edge=q_edge, q_dir=q_dir)
+            adl = RegimeAwareDecisionLayer(
+                costs=costs_from_config(), regime_thresholds=adapt,
+            )
+            m_adaptive = _eval_thresholds(data, mask_test, adl)
+            sel_str = []
+            for rid in (0, 1, 2):
+                t = adapt.get(rid, {})
+                disabled = (t.get("min_edge_ratio", 0) >= 99.0)
+                tag = "OFF" if disabled else (
+                    f"e={t['min_edge_ratio']:.1f}/d={t['min_dir_prob']:.2f}/s={t['min_sell_dir_prob']:.2f}")
+                sel_str.append(f"{REGIME_NAMES[rid]}:{tag}")
+            print(f"     adaptive q={q_edge:.2f}/{q_dir:.2f}: " + " | ".join(sel_str))
+
         print(f"     {'strategy':<24} | {'cov':>6} | {'BUY':>4} | {'SELL':>4} | "
               f"{'hit':>6} | {'win':>6} | {'exp%':>7} | {'sharpe':>7}")
-        for label, m in [("B-15 static", m_static), ("Sprint 5 regime-aware", m_regime)]:
+        for label, m in [("B-15 static", m_static),
+                         ("Sprint 5 regime-aware", m_regime),
+                         ("B-22 adaptive quantile", m_adaptive)]:
             if m is None:
                 continue
             hit = f"{m['hit_rate']:.4f}" if not np.isnan(m['hit_rate']) else "  n/a "
@@ -296,6 +394,7 @@ def run_walk_forward(folds: int = 5, min_calib_frac: float = 0.30) -> list[dict]
             "n_test":     n_test,
             "static":     m_static,
             "regime":     m_regime,
+            "adaptive":   m_adaptive,
         })
 
     # ── Aggregate across folds ──
@@ -310,7 +409,10 @@ def run_walk_forward(folds: int = 5, min_calib_frac: float = 0.30) -> list[dict]
             return float("nan"), float("nan"), 0
         return float(np.mean(vals)), float(np.std(vals, ddof=1) if len(vals) > 1 else 0), len(vals)
 
-    for label, key in [("B-15 static", "static"), ("Sprint 5 regime-aware", "regime")]:
+    strategies = [("B-15 static", "static"),
+                  ("Sprint 5 regime-aware", "regime"),
+                  ("B-22 adaptive quantile", "adaptive")]
+    for label, key in strategies:
         mu_e, sd_e, ne = _agg(key, lambda m: m["expectancy_pct"])
         mu_s, sd_s, _  = _agg(key, lambda m: m["sharpe"])
         mu_h, sd_h, _  = _agg(key, lambda m: m["hit_rate"])
@@ -333,5 +435,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--min-calib-frac", type=float, default=0.30)
+    parser.add_argument("--adaptive-thresholds", action="store_true",
+                        help="B-22 fix: добавить Strategy C — quantile-based пороги per-fold")
+    parser.add_argument("--q-edge", type=float, default=0.80,
+                        help="Quantile для edge_ratio (default 0.80 → ~20%% coverage)")
+    parser.add_argument("--q-dir",  type=float, default=0.75,
+                        help="Quantile для dir_prob")
     args = parser.parse_args()
-    run_walk_forward(folds=args.folds, min_calib_frac=args.min_calib_frac)
+    run_walk_forward(folds=args.folds, min_calib_frac=args.min_calib_frac,
+                     adaptive_thresholds=args.adaptive_thresholds,
+                     q_edge=args.q_edge, q_dir=args.q_dir)

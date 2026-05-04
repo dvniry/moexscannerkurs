@@ -124,36 +124,36 @@ class DayHourCrossAttention(nn.Module):
 
 
 class IntradayConsistencyLoss(nn.Module):
-    """Два компонента:
+    """Три компонента:
 
     next_hour_loss: MSE между предсказанием OHLCV часа t+1 и фактическим [t+1].
-    extremes_loss:  Huber между предсказанием [dHigh, dLow] и intraday_extremes.
+    extremes_loss:  Huber между предсказанием [dHigh, dLow] и intraday_extremes[:2].
+    high_low_loss:  BCE на high_first_label (extremes[:,2]); маска -1 = unknown.
     """
 
     def __init__(self, next_hour_weight: float = 0.5,
-                 extremes_weight: float = 0.5):
+                 extremes_weight: float = 0.5,
+                 high_low_weight: float = 0.2):   # Sprint 8.2
         super().__init__()
-        self.w_next = next_hour_weight
-        self.w_ext  = extremes_weight
+        self.w_next   = next_hour_weight
+        self.w_ext    = extremes_weight
+        self.w_hl     = high_low_weight
 
     def forward(self,
                 next_hr_pred: torch.Tensor,    # [B, T, 5]
                 feats_actual: torch.Tensor,     # [B, T, F>=5]
-                extremes_pred: torch.Tensor,   # [B, 2]
-                extremes_true: torch.Tensor,   # [B, 2]
+                extremes_pred: torch.Tensor,   # [B, 2] or [B, 3]
+                extremes_true: torch.Tensor,   # [B, 2] or [B, 3]
                 mask: torch.Tensor             # [B, T]
                 ) -> torch.Tensor:
 
         loss = torch.tensor(0.0, device=next_hr_pred.device)
 
         # ── next_hour_loss ───────────────────────────────────────────
-        # Предсказываем feats[t+1,:5] по hidden[t]
-        # pred[:, :-1, :] предсказывает target[:, 1:, :5]
         if next_hr_pred is not None and mask.sum() > 0:
-            pred_slice   = next_hr_pred[:, :-1, :]      # [B, T-1, 5]
-            target_slice = feats_actual[:, 1:, :5]      # [B, T-1, 5]
-            mask_slice   = mask[:, 1:]                  # [B, T-1]
-
+            pred_slice   = next_hr_pred[:, :-1, :]
+            target_slice = feats_actual[:, 1:, :5]
+            mask_slice   = mask[:, 1:]
             valid = mask_slice > 0.5
             if valid.sum() > 0:
                 p = pred_slice[valid.unsqueeze(-1).expand_as(pred_slice)]
@@ -163,6 +163,17 @@ class IntradayConsistencyLoss(nn.Module):
         # ── extremes_loss ────────────────────────────────────────────
         if extremes_pred is not None and extremes_true is not None:
             loss = loss + self.w_ext * F.huber_loss(
-                extremes_pred, extremes_true, delta=1.0)
+                extremes_pred[:, :2], extremes_true[:, :2], delta=1.0)
+
+            # Sprint 8.2: high_first BCE — skip where label == -1 (unknown)
+            if (self.w_hl > 0
+                    and extremes_pred.shape[-1] >= 3
+                    and extremes_true.shape[-1] >= 3):
+                hl_logit = extremes_pred[:, 2]
+                hl_label = extremes_true[:, 2]
+                valid_hl = hl_label >= 0.0  # -1 = unknown (no hourly data)
+                if valid_hl.sum() >= 4:
+                    loss = loss + self.w_hl * F.binary_cross_entropy_with_logits(
+                        hl_logit[valid_hl], hl_label[valid_hl])
 
         return loss

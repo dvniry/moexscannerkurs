@@ -225,6 +225,7 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
     loader = _make_loader_v3(te_ds, batch_size=256, shuffle=False, num_workers=0)
     all_cls_logits, all_dir_prob, all_ohlc_pred = [], [], []
     all_mfe_mae, all_fill_prob, all_edge_pred = [], [], []   # Sprint 2
+    all_extremes = []                                         # Sprint 8.1
 
     with torch.no_grad():
         for batch in loader:
@@ -235,7 +236,7 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
             nums = ({W: num_dict[W].to(device) for W in SCALES}
                     if num_dict is not None else None)
 
-            lo, op, _, dir_l, _, econ_p, _, _ = _forward_unpack(model_eval, imgs, nums, ctx_t, ht)
+            lo, op, _, dir_l, _, econ_p, _, ext_p = _forward_unpack(model_eval, imgs, nums, ctx_t, ht)
 
             all_cls_logits.append(torch.softmax(lo, dim=1).cpu().numpy())
             all_dir_prob.append(torch.sigmoid(dir_l).cpu().numpy())
@@ -245,9 +246,11 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
                 all_mfe_mae.append(econ_p["mfe_mae"].cpu().numpy())
                 all_fill_prob.append(torch.sigmoid(econ_p["fill_logit"]).cpu().numpy())
                 all_edge_pred.append(econ_p["edge_pred"].cpu().numpy())
+            if ext_p is not None:
+                all_extremes.append(ext_p.cpu().numpy())
 
-    # Val dir accuracy для взвешивания ансамбля
-    val_dir_probs_list, val_trues_list = [], []
+    # Val dir accuracy + Sharpe для взвешивания ансамбля (Sprint 7 #12)
+    val_dir_probs_list, val_trues_list, val_ohlc_c_list = [], [], []
     with torch.no_grad():
         for batch in val_loader:
             imgs_dict, num_dict, cls_y, ohlc_y, ctx, hourly_data, *_ = batch
@@ -261,6 +264,7 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
 
             val_dir_probs_list.append(torch.sigmoid(dir_l).cpu().numpy())
             val_trues_list.append(cls_y.numpy())
+            val_ohlc_c_list.append(ohlc_y[:, 3].numpy())  # bar1 ΔClose in ATR units
 
     val_dir_probs_arr = np.concatenate(val_dir_probs_list)
     val_trues_arr     = np.concatenate(val_trues_list)
@@ -273,7 +277,17 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
     else:
         val_dir_acc = 0.5
 
-    print(f'  [SEED {seed}] val_dir_acc = {val_dir_acc:.4f}')
+    # Sprint 7 #12: compute val Sharpe for ensemble weighting
+    val_sharpe = 0.0
+    if val_ohlc_c_list:
+        ohlc_c_val = np.concatenate(val_ohlc_c_list)
+        dir_signal = np.where(val_dir_probs_arr > 0.5, 1.0, -1.0)
+        pnl = dir_signal * ohlc_c_val - 2 * 0.001
+        if pnl.std() > 1e-9:
+            val_sharpe = float(np.clip(
+                pnl.mean() / pnl.std() * np.sqrt(252), -3.0, 3.0))
+
+    print(f'  [SEED {seed}] val_dir_acc={val_dir_acc:.4f}  val_sharpe={val_sharpe:.3f}')
 
     del model_eval
     torch.cuda.empty_cache()
@@ -281,6 +295,7 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
     result = {
         'seed':        seed,
         'val_dir_acc': val_dir_acc,
+        'val_sharpe':  val_sharpe,
         'path':        save_path,
         'cls_probs':   np.concatenate(all_cls_logits),
         'dir_prob':    np.concatenate(all_dir_prob),
@@ -290,6 +305,8 @@ def train_one_seed(seed: int, save_path: str, shared_data: dict,
         result['mfe_mae']   = np.concatenate(all_mfe_mae)
         result['fill_prob'] = np.concatenate(all_fill_prob)
         result['edge_pred'] = np.concatenate(all_edge_pred)
+    if all_extremes:
+        result['extremes_pred'] = np.concatenate(all_extremes)
     return result
 
 
@@ -301,9 +318,10 @@ def evaluate_ensemble(results: list, y_test: np.ndarray,
                       ohlc_test: np.ndarray,
                       val_dir_accs: dict = None):
     """Selective weighted ensemble.
-    
-    1. Фильтруем модели с val_dir_acc < 0.51
-    2. Взвешиваем по val_dir_acc - 0.5
+
+    Sprint 7 #12: взвешиваем по val_sharpe (если доступен и std < 2.0),
+    иначе fallback на val_dir_acc - 0.5.
+    Фильтруем модели с val_dir_acc < 0.51.
     """
     from sklearn.metrics import classification_report, f1_score
 
@@ -323,18 +341,23 @@ def evaluate_ensemble(results: list, y_test: np.ndarray,
             print(f'  🚫 Отброшены seeds с val_dir_acc <= 0.51: {dropped}')
         results = alive
 
-    # Расчёт весов
-    if val_dir_accs is not None:
+    # Sprint 7 #12: Расчёт весов по Sharpe; fallback на val_dir_acc
+    sharpe_vals = np.array([max(0.0, r.get('val_sharpe', 0.0)) for r in results])
+    use_sharpe = (sharpe_vals.std() < 2.0 and sharpe_vals.sum() > 0)
+    if use_sharpe:
+        weights = sharpe_vals / sharpe_vals.sum()
+        print(f'  Weights (Sharpe): {dict(zip([r["seed"] for r in results], weights.round(3)))}')
+    elif val_dir_accs is not None:
         edges = np.array([
             max(0.0, val_dir_accs.get(r['seed'], 0.5) - 0.5)
             for r in results
         ])
         weights = edges / edges.sum() if edges.sum() > 0 \
             else np.ones(len(results)) / len(results)
+        print(f'  Weights (dir_acc): {dict(zip([r["seed"] for r in results], weights.round(3)))}')
     else:
         weights = np.ones(len(results)) / len(results)
-
-    print(f'  Weights: {dict(zip([r["seed"] for r in results], weights.round(3)))}')
+        print(f'  Weights (uniform): {dict(zip([r["seed"] for r in results], weights.round(3)))}')
 
     cls_probs_avg = np.average(
         [r['cls_probs'] for r in results], axis=0, weights=weights)
@@ -351,6 +374,11 @@ def evaluate_ensemble(results: list, y_test: np.ndarray,
         edge_pred_avg = np.average([r['edge_pred'] for r in results], axis=0, weights=weights)
     else:
         mfe_mae_avg = fill_prob_avg = edge_pred_avg = None
+
+    # Sprint 8.1: усреднённые extremes_pred
+    has_extremes = all('extremes_pred' in r for r in results)
+    extremes_avg = (np.average([r['extremes_pred'] for r in results], axis=0, weights=weights)
+                    if has_extremes else None)
 
     preds = cls_probs_avg.argmax(axis=1)
     trues = y_test
@@ -398,6 +426,7 @@ def evaluate_ensemble(results: list, y_test: np.ndarray,
             mfe_mae=mfe_mae_avg,
             fill_prob=fill_prob_avg,
             edge_pred=edge_pred_avg,
+            extremes=extremes_avg,  # Sprint 8.1: None if not available
         )
         decision_signal     = dec['signal']
         decision_confidence = dec['confidence']
@@ -430,6 +459,7 @@ def evaluate_ensemble(results: list, y_test: np.ndarray,
         'mfe_mae':      mfe_mae_avg,
         'fill_prob':    fill_prob_avg,
         'edge_pred':    edge_pred_avg,
+        'extremes_pred':       extremes_avg,
         'decision_signal':     decision_signal,
         'decision_confidence': decision_confidence,
     }
@@ -593,6 +623,12 @@ def main():
         save_kwargs['edge_pred']           = ens['edge_pred']
         save_kwargs['decision_signal']     = ens['decision_signal']
         save_kwargs['decision_confidence'] = ens['decision_confidence']
+    if ens.get('extremes_pred') is not None:
+        ext = ens['extremes_pred']
+        save_kwargs['extremes_pred'] = ext
+        # Sprint 8.2: extract high_first_prob from 3rd column if available
+        if ext.ndim == 2 and ext.shape[1] >= 3:
+            save_kwargs['high_first_prob'] = 1.0 / (1.0 + np.exp(-ext[:, 2]))
     if econ_test is not None and len(econ_test) > 0:
         save_kwargs['econ_test'] = econ_test
     if len(test_dates_arr) > 0 and any(d != "" for d in test_dates_arr):

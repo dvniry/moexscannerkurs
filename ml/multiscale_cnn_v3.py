@@ -585,6 +585,23 @@ class DirectionHead(nn.Module):
 
 
 # ────────────────────────────────────────────────────────────
+# Sprint 8.2: high_first order head
+# ────────────────────────────────────────────────────────────
+
+class HighLowOrderHead(nn.Module):
+    """P(high reached before low intraday): binary BCE head."""
+    def __init__(self, in_dim=TRUNK_OUT, dropout=0.2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 64), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(64, 1),
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        return self.net(x).squeeze(-1)  # [B] logit
+
+
+# ────────────────────────────────────────────────────────────
 # Full Model
 # ────────────────────────────────────────────────────────────
 
@@ -628,6 +645,7 @@ class MultiScaleHybridV3(nn.Module):
             self.intraday_enc   = HourlyFeedbackEncoder(out_dim=TRUNK_OUT)
             self.day_hour_attn  = DayHourCrossAttention(d_model=TRUNK_OUT)
         self.extremes_head = nn.Linear(TRUNK_OUT, 2)   # pred [dHigh, dLow]
+        self.high_low_head = HighLowOrderHead(TRUNK_OUT)  # Sprint 8.2: P(high before low)
 
         self.cls_head  = CalibratedClsHead(TRUNK_OUT)
         self.ohlc_head = OHLCHeadV2(TRUNK_OUT, future_bars=future_bars)
@@ -700,7 +718,9 @@ class MultiScaleHybridV3(nn.Module):
         aux       = self.aux_head(h)
         dir_logit = self.dir_head(h)
         econ      = self.econ_heads(h)
-        extremes  = self.extremes_head(h)   # [B, 2]: pred [dHigh, dLow]
+        ext_dhl   = self.extremes_head(h)              # [B, 2]: pred [dHigh, dLow]
+        hl_logit  = self.high_low_head(h).unsqueeze(-1) # [B, 1]: P(high before low) logit
+        extremes  = torch.cat([ext_dhl, hl_logit], dim=-1)  # [B, 3] Sprint 8.2
 
         return logits, ohlc, aux, dir_logit, intraday_pred, econ, next_hr_pred, extremes
 

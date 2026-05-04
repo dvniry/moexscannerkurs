@@ -57,6 +57,10 @@ class DecisionLayer:
       net_edge_long    >= min_edge_ratio * cost_roundtrip   (покроет костов)
 
     Симметрично для SELL. Если оба ok — выбираем по dir_prob.
+
+    Sprint 8.1 (extremes): если передан extremes [N,2] = (pred_high, pred_low) в ATR-units,
+    вычисляется range_pred = high - low; при range_pred > min_range_threshold добавляется
+    бонус к edge_pred: edge_adj = edge + extremes_weight * clip(range - threshold, 0, 0.1).
     """
     def __init__(
         self,
@@ -70,6 +74,9 @@ class DecisionLayer:
                                              # 0.55 → dir_prob ≤ 0.45 (вместо ≤ 0.15)
         min_fill_prob:       float = 0.40,
         min_rr:              float = 1.2,
+        # Sprint 8.1: extremes head support
+        extremes_weight:     float = 0.15,   # вес edge-бонуса от predicted range
+        min_range_threshold: float = 0.005,  # мин. диапазон (доля) для активации бонуса
     ):
         self.costs = costs or TradingCosts()
         self.min_edge_ratio    = float(min_edge_ratio)
@@ -77,15 +84,20 @@ class DecisionLayer:
         self.min_sell_dir_prob = float(min_sell_dir_prob)
         self.min_fill_prob     = float(min_fill_prob)
         self.min_rr            = float(min_rr)
+        self.extremes_weight     = float(extremes_weight)
+        self.min_range_threshold = float(min_range_threshold)
 
     @torch.no_grad()
-    def decide(self, dir_logit: torch.Tensor, econ: dict) -> dict:
+    def decide(self, dir_logit: torch.Tensor, econ: dict,
+               extremes: Optional[torch.Tensor] = None) -> dict:
         """
         dir_logit: [B] — logit из dir_head (перед sigmoid)
         econ: dict из EconomicHeads.forward с ключами:
             mfe_mae    [B, 4]  (mfe_l, mae_l, mfe_s, mae_s)
             fill_logit [B, 2]  (fill_l, fill_s) — logits
             edge_pred  [B, 2]  (edge_l, edge_s) — net edge prediction
+        extremes: [B, 2] optional — (pred_high, pred_low) в ATR-нормированных единицах.
+            Sprint 8.1: если передан, range_pred = high - low используется как бонус к edge.
 
         Returns dict:
             signal     [B] long  — 0/1/2
@@ -101,6 +113,15 @@ class DecisionLayer:
         mfe_l, mae_l, mfe_s, mae_s = mfe_mae.unbind(-1)
         fill_l, fill_s             = torch.sigmoid(fill_lg).unbind(-1)
         edge_l, edge_s             = edge_pr.unbind(-1)
+
+        # Sprint 8.1: extremes бонус к edge_pred
+        if extremes is not None and self.extremes_weight > 0:
+            ext = extremes.float()
+            range_pred  = (ext[:, 0] - ext[:, 1]).clamp(min=0.0)   # [B] high-low
+            bonus = (self.extremes_weight
+                     * (range_pred - self.min_range_threshold).clamp(0.0, 0.10))
+            edge_l = edge_l + bonus
+            edge_s = edge_s + bonus
 
         rr_l = mfe_l / mae_l.clamp_min(1e-6)
         rr_s = mfe_s / mae_s.clamp_min(1e-6)
@@ -156,10 +177,11 @@ class DecisionLayer:
 
     def decide_numpy(
         self,
-        dir_prob:   np.ndarray,    # [N] sigmoid вероятность UP (уже без logit)
-        mfe_mae:    np.ndarray,    # [N, 4]
-        fill_prob:  np.ndarray,    # [N, 2] уже sigmoid
-        edge_pred:  np.ndarray,    # [N, 2]
+        dir_prob:   np.ndarray,              # [N] sigmoid вероятность UP (уже без logit)
+        mfe_mae:    np.ndarray,              # [N, 4]
+        fill_prob:  np.ndarray,              # [N, 2] уже sigmoid
+        edge_pred:  np.ndarray,              # [N, 2]
+        extremes:   Optional[np.ndarray] = None,  # [N, 2] (pred_high, pred_low) — Sprint 8.1
     ) -> dict:
         """Numpy-вариант для оффлайн-инференса (бэктест, export_csv)."""
         dir_logit = torch.from_numpy(np.log(np.clip(dir_prob, 1e-6, 1.0 - 1e-6)
@@ -172,7 +194,9 @@ class DecisionLayer:
             "fill_logit": torch.from_numpy(fill_logit.astype(np.float32)),
             "edge_pred":  torch.from_numpy(edge_pred.astype(np.float32)),
         }
-        out = self.decide(dir_logit, econ)
+        ext_t = (torch.from_numpy(extremes.astype(np.float32))
+                 if extremes is not None else None)
+        out = self.decide(dir_logit, econ, extremes=ext_t)
         return {k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else v) for k, v in out.items()}
 
 
@@ -239,7 +263,8 @@ class RegimeAwareDecisionLayer:
         mfe_mae:    np.ndarray,
         fill_prob:  np.ndarray,
         edge_pred:  np.ndarray,
-        regime:     np.ndarray,        # [N] int8: 0=bear, 1=side, 2=bull, -1=unknown
+        regime:     np.ndarray,                   # [N] int8: 0=bear, 1=side, 2=bull, -1=unknown
+        extremes:   Optional[np.ndarray] = None,  # [N, 2] — Sprint 8.1
     ) -> dict:
         """Применяет per-regime пороги. Сэмплы группируются по regime ID,
         для каждой группы вызывается соответствующий DecisionLayer.
@@ -262,6 +287,7 @@ class RegimeAwareDecisionLayer:
                 mfe_mae   = mfe_mae[mask],
                 fill_prob = fill_prob[mask],
                 edge_pred = edge_pred[mask],
+                extremes  = extremes[mask] if extremes is not None else None,
             )
             signal[mask]     = out["signal"]
             confidence[mask] = out["confidence"]
