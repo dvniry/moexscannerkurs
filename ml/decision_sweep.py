@@ -266,6 +266,10 @@ def main():
                         help="Поиск оптимума по expectancy")
     parser.add_argument("--by-regime", action="store_true",
                         help="Sprint 5: per-regime sweep (bear/side/bull)")
+    parser.add_argument("--source", choices=["raw", "calibrated", "platt", "auto"],
+                        default="auto",
+                        help="Sprint 10 B: какие dir_prob использовать. "
+                             "auto: platt > calibrated > raw")
     args = parser.parse_args()
 
     if not os.path.exists(args.predictions):
@@ -282,8 +286,28 @@ def main():
         print(f"ERROR: в npz отсутствуют ключи: {missing}")
         return 2
 
+    # Sprint 10 B: выбор источника dir_prob (raw/temperature/platt)
+    has_calib = "dir_prob_calibrated" in npz.files
+    has_platt = "dir_prob_platt"      in npz.files
+    if args.source == "auto":
+        if has_platt:
+            src_key = "dir_prob_platt"
+        elif has_calib:
+            src_key = "dir_prob_calibrated"
+        else:
+            src_key = "dir_prob"
+    elif args.source == "platt":
+        src_key = "dir_prob_platt" if has_platt else "dir_prob"
+        if not has_platt: print("  [WARN] dir_prob_platt отсутствует → fallback raw")
+    elif args.source == "calibrated":
+        src_key = "dir_prob_calibrated" if has_calib else "dir_prob"
+        if not has_calib: print("  [WARN] dir_prob_calibrated отсутствует → fallback raw")
+    else:
+        src_key = "dir_prob"
+    print(f"  Источник dir_prob: {src_key}")
+
     data = dict(
-        dir_prob  = npz["dir_prob"].astype(np.float32),
+        dir_prob  = npz[src_key].astype(np.float32),
         mfe_mae   = npz["mfe_mae_pred"].astype(np.float32),
         fill_prob = npz["fill_prob"].astype(np.float32),
         edge_pred = npz["edge_pred"].astype(np.float32),

@@ -262,7 +262,16 @@ def _adaptive_quantile_thresholds(
 
 def run_walk_forward(folds: int = 5, min_calib_frac: float = 0.30,
                      adaptive_thresholds: bool = False,
-                     q_edge: float = 0.80, q_dir: float = 0.75) -> list[dict]:
+                     q_edge: float = 0.80, q_dir: float = 0.75,
+                     purge_days: int = 0) -> list[dict]:
+    """Walk-forward с опциональным purged K-Fold (Sprint 9.5).
+
+    purge_days: интервал в днях между концом calibration и началом test.
+        Цель: убрать leakage из-за targets, охватывающих несколько баров
+        (MFE/MAE считается на future_bars=5 баров вперёд → последние 5 дней
+        calibration содержат метки, частично покрывающие test-период).
+        Рекомендация: gap = future_bars + 1 ≈ 5–7 дней.
+    """
     """Запускает K-fold walk-forward.
 
     folds:           число тестовых фолдов
@@ -316,22 +325,36 @@ def run_walk_forward(folds: int = 5, min_calib_frac: float = 0.30,
     print(f"  Sprint 6 — Walk-forward validation  (folds={folds})")
     print(f"  Total samples: {n}  Calibration min: {int(n*min_calib_frac)}  Test/fold: ~{test_size}")
     print(f"  Regime tag: {'present' if has_regime else 'MISSING (use patch_ensemble_regime)'}")
+    if purge_days > 0:
+        print(f"  Purge gap: {purge_days} дней (Sprint 9.5 — устраняет MFE/MAE leakage)")
     print(f"{'='*92}")
 
     fold_results = []
     for k, (st, en) in enumerate(fold_starts, 1):
-        mask_calib = np.zeros(n, dtype=bool)
-        mask_calib[:st] = True
+        # ── Sprint 9.5: purged K-Fold ──
+        # Калибровка = всё до st, но за вычетом purge_days до test_start_date.
+        # Test остаётся [st:en) (purge применяется только к calibration tail).
+        if purge_days > 0:
+            test_start_date = np.datetime64(dates[st])
+            purge_cutoff = (test_start_date - np.timedelta64(purge_days, 'D')).astype(str)
+            mask_calib = np.zeros(n, dtype=bool)
+            mask_calib[:st] = True
+            mask_calib &= (dates < purge_cutoff)
+        else:
+            mask_calib = np.zeros(n, dtype=bool)
+            mask_calib[:st] = True
         mask_test  = np.zeros(n, dtype=bool)
         mask_test[st:en]  = True
         n_calib = int(mask_calib.sum())
+        n_purged = int(st - n_calib)
         n_test  = int(mask_test.sum())
-        d_calib_first = dates[mask_calib][0]
-        d_calib_last  = dates[mask_calib][-1]
+        d_calib_first = dates[mask_calib][0] if mask_calib.any() else "—"
+        d_calib_last  = dates[mask_calib][-1] if mask_calib.any() else "—"
         d_test_first  = dates[mask_test][0]
         d_test_last   = dates[mask_test][-1]
         print(f"\n  ── Fold {k}/{folds} ──")
-        print(f"     calibration: {d_calib_first} → {d_calib_last}  (N={n_calib})")
+        purge_tag = f"  (-{n_purged} purged)" if purge_days > 0 else ""
+        print(f"     calibration: {d_calib_first} → {d_calib_last}  (N={n_calib}){purge_tag}")
         print(f"     test:        {d_test_first} → {d_test_last}  (N={n_test})")
 
         # ── Strategy A: B-15 fixed thresholds (in-sample baseline) ──
@@ -441,7 +464,11 @@ if __name__ == "__main__":
                         help="Quantile для edge_ratio (default 0.80 → ~20%% coverage)")
     parser.add_argument("--q-dir",  type=float, default=0.75,
                         help="Quantile для dir_prob")
+    parser.add_argument("--purge-days", type=int, default=0,
+                        help="Sprint 9.5: gap в днях между calibration и test "
+                             "(устраняет MFE/MAE leakage; рекомендация=5–7)")
     args = parser.parse_args()
     run_walk_forward(folds=args.folds, min_calib_frac=args.min_calib_frac,
                      adaptive_thresholds=args.adaptive_thresholds,
-                     q_edge=args.q_edge, q_dir=args.q_dir)
+                     q_edge=args.q_edge, q_dir=args.q_dir,
+                     purge_days=args.purge_days)

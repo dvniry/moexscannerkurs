@@ -568,6 +568,11 @@ def main():
     total_tr    = len(y_tr)
     raw_w = [math.sqrt(total_tr / max(counts_dict.get(i, 1), 1)) for i in range(3)]
     raw_w[1] = min(raw_w[1], 1.0)   # cap FLAT
+    # Sprint 10 A (откачено 2026-05-06): UP×1.5 переучил модель в UP-bias
+    # (recall UP=0.91, recall DOWN=0.10), coverage упал 8×, best metric выбирался
+    # на E1 когда модель вся в BUY. Проблема: cls_head управляется cls_weights,
+    # но decision_layer смотрит на dir_prob (отдельная голова) — рассогласование.
+    # Перешли на путь B: Platt scaling post-hoc для dir_prob (см. calibrate_platt.py).
     cls_weights = torch.tensor(raw_w, dtype=torch.float32).to(device)
 
     print(f'  Class counts: UP={counts_dict.get(0,0)} '
@@ -625,10 +630,15 @@ def main():
         save_kwargs['decision_confidence'] = ens['decision_confidence']
     if ens.get('extremes_pred') is not None:
         ext = ens['extremes_pred']
-        save_kwargs['extremes_pred'] = ext
-        # Sprint 8.2: extract high_first_prob from 3rd column if available
+        # Sprint 11.1: extremes теперь shape [N, 3 + 6*fb] — старые consumer'ы
+        # читают [:, :3]. Сохраняем оба варианта: extremes_pred (только первые 3
+        # для backward-compat), и quantile_pred — отдельно для D-execution.
+        save_kwargs['extremes_pred'] = ext[:, :3] if ext.shape[1] > 3 else ext
         if ext.ndim == 2 and ext.shape[1] >= 3:
             save_kwargs['high_first_prob'] = 1.0 / (1.0 + np.exp(-ext[:, 2]))
+        if ext.ndim == 2 and ext.shape[1] > 3:
+            # Sprint 11.1: quantile slice [N, 6*fb]: low_q × fb || high_q × fb
+            save_kwargs['quantile_pred'] = ext[:, 3:].astype(np.float32)
     if econ_test is not None and len(econ_test) > 0:
         save_kwargs['econ_test'] = econ_test
     if len(test_dates_arr) > 0 and any(d != "" for d in test_dates_arr):

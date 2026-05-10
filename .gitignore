@@ -11,6 +11,7 @@ eval_results.json
 _meta.json
 итог прогона.txt
 mt5_signals
+coursework_material.md
 # Environment
 .env
 .env.*

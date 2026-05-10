@@ -646,6 +646,10 @@ class MultiScaleHybridV3(nn.Module):
             self.day_hour_attn  = DayHourCrossAttention(d_model=TRUNK_OUT)
         self.extremes_head = nn.Linear(TRUNK_OUT, 2)   # pred [dHigh, dLow]
         self.high_low_head = HighLowOrderHead(TRUNK_OUT)  # Sprint 8.2: P(high before low)
+        # Sprint 11.1: quantile head для full OHLC (3 q × 4 channels × fb).
+        # Прежде была QuantileExtremesHead (low+high only). Теперь все 4 канала
+        # с ordering penalty за перекрытие диапазонов.
+        self.quantile_head = QuantileOHLCHead(TRUNK_OUT, future_bars=future_bars)
 
         self.cls_head  = CalibratedClsHead(TRUNK_OUT)
         self.ohlc_head = OHLCHeadV2(TRUNK_OUT, future_bars=future_bars)
@@ -662,6 +666,7 @@ class MultiScaleHybridV3(nn.Module):
         self.econ_heads._init_heads()   # Sprint 2: после _init_weights — иначе bias=-4 обнулится
         nn.init.xavier_uniform_(self.extremes_head.weight, gain=0.1)
         nn.init.zeros_(self.extremes_head.bias)
+        self.quantile_head._init_head()
 
     def _init_weights(self):
         for m in self.modules():
@@ -720,7 +725,11 @@ class MultiScaleHybridV3(nn.Module):
         econ      = self.econ_heads(h)
         ext_dhl   = self.extremes_head(h)              # [B, 2]: pred [dHigh, dLow]
         hl_logit  = self.high_low_head(h).unsqueeze(-1) # [B, 1]: P(high before low) logit
-        extremes  = torch.cat([ext_dhl, hl_logit], dim=-1)  # [B, 3] Sprint 8.2
+        # Sprint 11.1: quantile (low/high) prediction. Конкатенируется в конец
+        # extremes для backward-compat — старые consumer'ы берут [:3], новые
+        # знают что [3:] это [low_q × fb || high_q × fb] flatten.
+        quantile = self.quantile_head(h)               # [B, 6 * fb]
+        extremes = torch.cat([ext_dhl, hl_logit, quantile], dim=-1)  # [B, 3 + 6*fb]
 
         return logits, ohlc, aux, dir_logit, intraday_pred, econ, next_hr_pred, extremes
 
@@ -774,8 +783,151 @@ class PinballLoss(nn.Module):
         return torch.where(err >= 0, q * err, (q - 1.) * err).mean()
 
 
+# ────────────────────────────────────────────────────────────
+# Sprint 11.1: Quantile heads для full OHLC.
+# Идея: вместо точечной OHLC выдаём 3 квантиля для каждой из 4 каналов
+# (open, high, low, close). Pinball loss калибрует ширину интервала,
+# ordering penalty заставляет диапазоны квантилей не перекрываться:
+# range(L) ∪ range(O,C) ∪ range(H) должны идти строго снизу вверх.
+#
+# Output shape: [B, 4 channels × 3 quantiles × future_bars] = [B, 60] для fb=5
+# Layout: O × 3q × fb || H × 3q × fb || L × 3q × fb || C × 3q × fb
+#
+# Backward-compat: предыдущий формат был [B, 30] (low+high only).
+# Старые npz, скрипты, и quantile_eval.py читают первые 30 как high/low.
+# Переименовали ключ в npz: quantile_pred теперь shape [N, 60].
+# ────────────────────────────────────────────────────────────
+
+class QuantileOHLCHead(nn.Module):
+    """3 квантиля × 4 канала (O,H,L,C) × future_bars."""
+    QUANTILES = (0.10, 0.50, 0.90)
+    CHANNELS  = ("O", "H", "L", "C")
+
+    def __init__(self, in_dim=TRUNK_OUT, future_bars=5):
+        super().__init__()
+        self.future_bars = future_bars
+        self.shared = nn.Sequential(
+            nn.Linear(in_dim, 128), nn.GELU(), nn.Dropout(0.1),
+        )
+        # 4 отдельные головы — каждая выдаёт 3*fb значений
+        self.head_open  = nn.Linear(128, len(self.QUANTILES) * future_bars)
+        self.head_high  = nn.Linear(128, len(self.QUANTILES) * future_bars)
+        self.head_low   = nn.Linear(128, len(self.QUANTILES) * future_bars)
+        self.head_close = nn.Linear(128, len(self.QUANTILES) * future_bars)
+
+    def _init_head(self):
+        with torch.no_grad():
+            for layer in (self.head_open, self.head_high,
+                          self.head_low, self.head_close):
+                nn.init.normal_(layer.weight, std=0.02)
+                nn.init.zeros_(layer.bias)
+            # Bias-init для H/L: все outputs смещены к полюсам (направление).
+            self.head_low.bias.fill_(-0.3)
+            self.head_high.bias.fill_(+0.3)
+            # Bias-init для O/C: quantile spread — q10 ниже, q90 выше median.
+            # Layout: bias[0:fb]=q10, bias[fb:2fb]=q50, bias[2fb:3fb]=q90
+            # SPREAD=0.30 ≈ 1.28*std_OC (std_OC ≈ 0.23 в normalized ATR units)
+            _SPREAD = 0.30
+            fb = self.future_bars
+            for head in (self.head_open, self.head_close):
+                head.bias.data[0:fb].fill_(-_SPREAD)
+                head.bias.data[fb:2*fb].fill_(0.0)
+                head.bias.data[2*fb:3*fb].fill_(+_SPREAD)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.shared(x)
+        # Layout: [B, O || H || L || C] each [3*fb]
+        return torch.cat([self.head_open(h),  self.head_high(h),
+                          self.head_low(h),   self.head_close(h)], dim=-1)
+
+
+def split_ohlc_quantiles(pred: torch.Tensor, future_bars: int = 5,
+                         n_quantiles: int = 3) -> dict:
+    """Разделяет [B, 60] на {O,H,L,C} -> [B, n_q, fb]."""
+    chunk = n_quantiles * future_bars
+    B = pred.shape[0]
+    O = pred[:, 0*chunk:1*chunk].reshape(B, n_quantiles, future_bars)
+    H = pred[:, 1*chunk:2*chunk].reshape(B, n_quantiles, future_bars)
+    L = pred[:, 2*chunk:3*chunk].reshape(B, n_quantiles, future_bars)
+    C = pred[:, 3*chunk:4*chunk].reshape(B, n_quantiles, future_bars)
+    return {"O": O, "H": H, "L": L, "C": C}
+
+
+def pinball_loss_quantile(pred: torch.Tensor, target: torch.Tensor,
+                          quantiles=(0.10, 0.50, 0.90)) -> torch.Tensor:
+    """Pinball loss: pred [B, len(q) * fb], target [B, fb].
+
+    Узкие интервалы при попадании = низкий loss, широкие = средний loss
+    всегда, узкие при промахе = большой штраф (хвостовая регрессия).
+    """
+    B, total = pred.shape
+    n_q  = len(quantiles)
+    fb   = total // n_q
+    pred_r = pred.reshape(B, n_q, fb)
+    target_r = target[:, :fb].unsqueeze(1).expand(B, n_q, fb)
+    err = target_r.float() - pred_r.float()
+    q   = torch.tensor(quantiles, device=pred.device, dtype=pred.dtype).view(1, n_q, 1)
+    return torch.where(err >= 0, q * err, (q - 1.) * err).mean()
+
+
+def ordering_penalty_ohlc(quant_pred: torch.Tensor, future_bars: int = 5,
+                          target_O: torch.Tensor | None = None,
+                          target_C: torch.Tensor | None = None,
+                          body_eps: float = 0.05) -> torch.Tensor:
+    """Штраф за перекрытие диапазонов по схеме L < {O,C} < H (всегда)
+    плюс направленное body O↔C (когда переданы таргеты).
+
+    Безусловная часть:
+        L_q90 ≤ O_q10  (low's upper tail ≤ open's lower tail — нет overlap)
+        L_q90 ≤ C_q10
+        O_q90 ≤ H_q10
+        C_q90 ≤ H_q10
+        + intra-channel monotonicity q10 ≤ q50 ≤ q90.
+
+    Body O↔C (опц., 2026-05-09): O и C могут идти в любом порядке,
+    поэтому жёсткий запрет overlap некорректен. Решение — supervised:
+      • bull bar  (target_C > target_O + eps):  штраф если O_q90 > C_q10
+      • bear bar  (target_C < target_O − eps):  штраф если C_q90 > O_q10
+      • doji      (|ΔOC| ≤ eps):                штрафа нет (модель имеет право
+                                                на overlap при неопределённости)
+    eps берём в нормированных единицах ATR — 0.05 ≈ 5% от ATR-расстояния.
+    """
+    parts = split_ohlc_quantiles(quant_pred, future_bars=future_bars, n_quantiles=3)
+    O, H, L, C = parts["O"], parts["H"], parts["L"], parts["C"]
+    # Q index: 0=q10, 1=q50, 2=q90
+
+    p1 = F.relu(L[:, 2, :] - O[:, 0, :])
+    p2 = F.relu(L[:, 2, :] - C[:, 0, :])
+    p3 = F.relu(O[:, 2, :] - H[:, 0, :])
+    p4 = F.relu(C[:, 2, :] - H[:, 0, :])
+    intra = sum(F.relu(t[:, 0, :] - t[:, 1, :]).mean()
+                + F.relu(t[:, 1, :] - t[:, 2, :]).mean()
+                for t in (O, H, L, C))
+
+    body_pen = torch.tensor(0., device=quant_pred.device, dtype=quant_pred.dtype)
+    if target_O is not None and target_C is not None:
+        n = min(target_O.shape[1], target_C.shape[1], O.shape[2])
+        body = target_C[:, :n].float() - target_O[:, :n].float()
+        bull_mask = (body >  body_eps).to(quant_pred.dtype)   # [B, n]
+        bear_mask = (body < -body_eps).to(quant_pred.dtype)
+        # bull: O_q90 ≤ C_q10  (тело снизу-вверх, нет overlap)
+        overlap_bull = F.relu(O[:, 2, :n] - C[:, 0, :n]) * bull_mask
+        # bear: C_q90 ≤ O_q10
+        overlap_bear = F.relu(C[:, 2, :n] - O[:, 0, :n]) * bear_mask
+        # нормируем на число активных bar'ов, чтобы вес не зависел от долю doji
+        denom = (bull_mask.sum() + bear_mask.sum()).clamp_min(1.0)
+        body_pen = (overlap_bull.sum() + overlap_bear.sum()) / denom
+
+    return p1.mean() + p2.mean() + p3.mean() + p4.mean() + intra + body_pen
+
+
 class MultiTaskLossV3(nn.Module):
-    """v3.19: исправленные веса, aux_loss передаётся из trainer."""
+    """v3.19: исправленные веса, aux_loss передаётся из trainer.
+
+    Sprint 11.1: optional quantile_loss_weight для pinball loss на high/low
+    quantile heads (см. QuantileExtremesHead). Активируется передачей
+    quantile_pred + ohlc_true в forward.
+    """
     def __init__(self, cls_weight=None,
                  gamma_per_class=(2.0, 1.0, 2.0),
                  label_smoothing=0.05,
@@ -784,6 +936,13 @@ class MultiTaskLossV3(nn.Module):
                  direction_weight=0.40,    # v3.19: было 0.80
                  reg_loss_weight=0.20,     # v3.19: было 0.30
                  aux_loss_weight=0.10,     # v3.19: было 0.05
+                 hl_quantile_loss_weight=0.05,  # Sprint 11.2 — pinball для H и L каналов
+                                                # (H/L coverage 79%/76% при 0.025 эфф. ранее)
+                 oc_quantile_loss_weight=0.15,  # Sprint 11.2 — pinball для O и C каналов (3×)
+                                                # O/C collapse: coverage 2.5%/0.9% при равных
+                                                # весах → нужен 3× gradient. Сумма 0.05+0.15=0.20
+                                                # × 2 каналов каждый = 0.40 total (как было 4×0.10)
+                 ordering_loss_weight=0.03,    # Sprint 11.1 — штраф за overlap L<O,C<H
                  dir_mask_threshold=1e-4):
         super().__init__()
         self.focal = AsymmetricFocalLoss(
@@ -795,10 +954,15 @@ class MultiTaskLossV3(nn.Module):
         self.dir_w           = direction_weight
         self.reg_loss_weight = reg_loss_weight
         self.aux_loss_weight = aux_loss_weight
+        self.hl_q_w          = hl_quantile_loss_weight
+        self.oc_q_w          = oc_quantile_loss_weight
+        self.ordering_w      = ordering_loss_weight
+        self.future_bars     = future_bars
         self.dir_mask_threshold = dir_mask_threshold
 
     def forward(self, logits, cls_y, ohlc_pred, ohlc_true,
-                dir_logit=None, aux_pred=None, aux_true=None):
+                dir_logit=None, aux_pred=None, aux_true=None,
+                quantile_pred=None):
 
         cls_loss = self.focal(logits, cls_y)
 
@@ -822,10 +986,43 @@ class MultiTaskLossV3(nn.Module):
                 and aux_pred.shape[-1] >= 2):
             a_loss = self.aux_fn(aux_pred.float(), aux_true.float())
 
+        # Sprint 11.1 — Pinball loss на full OHLC quantile head + ordering penalty.
+        # quantile_pred shape [B, 12*fb]: [O × 3q × fb || H × 3q × fb || L × 3q × fb || C × 3q × fb]
+        # ohlc_true shape [B, 4*fb]: [O,H,L,C] per bar (row-major)
+        q_loss = torch.tensor(0., device=logits.device)
+        ord_loss = torch.tensor(0., device=logits.device)
+        if (self.hl_q_w > 0 or self.oc_q_w > 0 or self.ordering_w > 0) and quantile_pred is not None:
+            B = ohlc_true.shape[0]
+            fb_true = ohlc_true.shape[1] // 4
+            ohlc_3d = ohlc_true.reshape(B, fb_true, 4)
+            target_O = ohlc_3d[:, :, 0]  # [B, fb]
+            target_H = ohlc_3d[:, :, 1]
+            target_L = ohlc_3d[:, :, 2]
+            target_C = ohlc_3d[:, :, 3]
+            chunk = quantile_pred.shape[1] // 4   # 3*fb (3 quantiles × fb)
+            pred_O = quantile_pred[:, 0*chunk:1*chunk]
+            pred_H = quantile_pred[:, 1*chunk:2*chunk]
+            pred_L = quantile_pred[:, 2*chunk:3*chunk]
+            pred_C = quantile_pred[:, 3*chunk:4*chunk]
+            if self.hl_q_w > 0 or self.oc_q_w > 0:
+                # Sprint 11.2: O/C получают 3× вес vs H/L — лечит O/C coverage collapse.
+                # Сумма весов идентична старому 4×0.10: 2×0.15 + 2×0.05 = 0.40
+                q_loss = (self.oc_q_w * pinball_loss_quantile(pred_O, target_O)
+                          + self.hl_q_w * pinball_loss_quantile(pred_H, target_H)
+                          + self.hl_q_w * pinball_loss_quantile(pred_L, target_L)
+                          + self.oc_q_w * pinball_loss_quantile(pred_C, target_C))
+            if self.ordering_w > 0:
+                ord_loss = ordering_penalty_ohlc(
+                    quantile_pred, future_bars=fb_true,
+                    target_O=target_O, target_C=target_C,
+                )
+
         total = (cls_loss
                  + self.reg_loss_weight * reg_loss
                  + self.dir_w           * dir_loss
-                 + self.aux_loss_weight * a_loss)
+                 + self.aux_loss_weight * a_loss
+                 + q_loss                           # уже взвешен per-channel
+                 + self.ordering_w      * ord_loss)
 
         return total, cls_loss, reg_loss, a_loss
 
@@ -878,7 +1075,7 @@ def evaluate_multiscale_v3(model, te_ds, y_test, ctx_dim,
     import json
 
     device = next(model.parameters()).device
-    loader = _make_loader_v3(te_ds, batch_size=1024, shuffle=False, num_workers=2)
+    loader = _make_loader_v3(te_ds, batch_size=512, shuffle=False, num_workers=2)
     model.eval()
 
     all_preds = []; all_trues = []

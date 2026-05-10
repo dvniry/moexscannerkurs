@@ -313,12 +313,19 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
             dir_l = dir_l.float().clamp(-15., 15.).nan_to_num(nan=0.)
             aux = aux.float().nan_to_num(nan=0.)
 
+            # Sprint 11.1: extremes теперь содержит [dHigh, dLow, hl_logit, quantile (6*fb)]
+            # Извлекаем quantile slice для pinball loss.
+            quantile_pred = (extremes_pred[:, 3:].float()
+                             if extremes_pred is not None and extremes_pred.shape[1] > 3
+                             else None)
+
             base_loss, lcls, lreg, laux = criterion(
                 lo, cls_y,
                 op, ohlc_y.float(),
                 dir_logit=dir_l,
                 aux_pred=aux,
                 aux_true=aux_t,
+                quantile_pred=quantile_pred,
             )
 
             lintra = _masked_intraday_loss(intraday_p, intraday_t, intraday_m)
@@ -507,11 +514,19 @@ def _run_epochs(model, tr_loader, val_loader, optimizer, scheduler,
                 if len(hit_arr) > 0:
                     dec_hit = float(hit_arr.mean())
 
-        # Sprint 7 #10: multi-objective val_metric.
-        # dir_acc_head доминирует (≥70%), sharpe_proxy учитывается только если > 0
-        # (шумный на малом val-сете — не штрафуем за отрицательный).
+        # Sprint 7 #10 + Sprint 10 fix: coverage-gated dec_hit.
+        # Раньше placeholder dec_hit=0.5 при нулевой торговле давал degenerate
+        # E1 (no trades) преимущество над поздними epoch'ами с реальной
+        # торговлей и hit=0.40. Видно по retrain 2026-05-06: все 3 seed'а
+        # выбирали best=E1 несмотря на улучшение dir_acc к E8.
+        # Фикс: вклад dec_hit умножается на coverage-weight (0 при 0%, 1 при ≥5%).
+        trade_cov = dec_buy_pct + dec_sell_pct
+        COV_FULL_WEIGHT = 0.05
+        cov_weight = min(trade_cov / COV_FULL_WEIGHT, 1.0) if COV_FULL_WEIGHT > 0 else 1.0
+        dec_hit_term = dec_hit * cov_weight
+
         val_metric = (dir_acc_head
-                      + CFG.val_metric_alpha * dec_hit
+                      + CFG.val_metric_alpha * dec_hit_term
                       + CFG.val_metric_beta * max(sharpe_proxy, 0.0))
         scheduler.step()
 

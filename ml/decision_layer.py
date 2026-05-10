@@ -58,8 +58,10 @@ class DecisionLayer:
 
     Симметрично для SELL. Если оба ok — выбираем по dir_prob.
 
-    Sprint 8.1 (extremes): если передан extremes [N,2] = (pred_high, pred_low) в ATR-units,
-    вычисляется range_pred = high - low; при range_pred > min_range_threshold добавляется
+    Sprint 8.1/8.2 (extremes): если передан extremes [N, 2|3] — первые две колонки
+    (pred_high, pred_low) в ATR-units. Третья колонка (high_first_logit, S8-2)
+    игнорируется здесь и используется только в `simulate_path_aware_strategy`.
+    range_pred = high - low; при range_pred > min_range_threshold добавляется
     бонус к edge_pred: edge_adj = edge + extremes_weight * clip(range - threshold, 0, 0.1).
     """
     def __init__(
@@ -96,8 +98,10 @@ class DecisionLayer:
             mfe_mae    [B, 4]  (mfe_l, mae_l, mfe_s, mae_s)
             fill_logit [B, 2]  (fill_l, fill_s) — logits
             edge_pred  [B, 2]  (edge_l, edge_s) — net edge prediction
-        extremes: [B, 2] optional — (pred_high, pred_low) в ATR-нормированных единицах.
-            Sprint 8.1: если передан, range_pred = high - low используется как бонус к edge.
+        extremes: [B, 2|3] optional — (pred_high, pred_low[, high_first_logit])
+            в ATR-нормированных единицах. Sprint 8.1: range_pred = high - low
+            используется как бонус к edge. Sprint 8.2: 3-я колонка high_first_logit
+            читается только в `simulate_path_aware_strategy`, здесь игнорируется.
 
         Returns dict:
             signal     [B] long  — 0/1/2
@@ -143,9 +147,10 @@ class DecisionLayer:
             & (er_s           >= self.min_edge_ratio)
         )
 
-        # При текущих порогах (min_dir_prob=0.70, min_sell_dir_prob=0.85)
-        # long_ok и short_ok взаимоисключающие — тай-брейк недостижим.
-        # Оставляем явное «иначе HOLD» через приоритет long над short при коллизии.
+        # При текущих B-15 порогах (min_dir_prob=0.75, min_sell_dir_prob=0.55)
+        # для коллизии нужно (1-dir_prob)≥0.55 И dir_prob≥0.75, что невозможно.
+        # Оставляем приоритет long над short как safeguard на случай tuned порогов
+        # (regime-aware sweep может занизить min_dir_prob → коллизия станет возможна).
         is_buy  = long_ok
         is_sell = short_ok & ~long_ok
 
@@ -201,46 +206,89 @@ class DecisionLayer:
 
 
 class RegimeAwareDecisionLayer:
-    """Sprint 5 / Idea #3: per-regime thresholds.
+    """Sprint 5 / Idea #3: per-regime thresholds. Обновлено Sprint 9.5 (2026-05-04).
 
-    Per-regime sweep на текущем npz показал разительную разницу прибыльности:
-        bear (8% времени):  +0.375%/trade  при edge=7.0, dir=0.80, sell=0.50
-        side (44%):         +0.006%/trade  при edge=6.5, dir=0.55, sell=0.50
-        bull (48%):         −0.190%/trade  (убыточно даже на best thresholds)
+    ─────────────────────────────────────────────────────────────────────
+    ИСТОРИЯ DEFAULT'ов
+    ─────────────────────────────────────────────────────────────────────
+    Sprint 5 (2026-05-01, in-sample sweep):
+        bear (8%):  +0.375%/trade  edge=7.0/dir=0.80/sell=0.50   ✅
+        side (44%): +0.006%/trade  edge=6.5/dir=0.55/sell=0.50   ✅
+        bull (48%): −0.190%/trade  → отключаем (`bull=OFF`)
+        Backtest: Sharpe +1.19, Total +1.61% — лучший результат проекта.
 
-    Стратегия: торгуем агрессивно в bear, осторожно в side, ОТКЛЮЧАЕМ в bull.
-    Bull-режим = HOLD always (модель имеет DOWN-bias и плохо работает в восходящем рынке).
+    Sprint 6 walk-forward (2026-05-02): Sprint 5 пороги дали coverage 0% OOS
+    на 5 фолдах — пороги были оптимизированы под in-sample distribution.
+
+    Sprint 9.5 (2026-05-04, новый sweep на 19067 сэмплов):
+        bear (5%):  −0.284%/trade  edge=2.0/dir=0.80/sell=0.50   ⚠️
+        side (42%): −0.164%/trade  edge=4.0/dir=0.80/sell=0.50   ⚠️
+        bull (52%): −0.151%/trade  edge=5.0/dir=0.75/sell=0.50   ⚠️ enabled
+
+    Все три режима показали отрицательный exp% на полной test-выборке —
+    это согласуется с Reliability anal. (модель overconfident на 12-46%).
+    Однако на fresh-window (последние 60 дней, 71.6% bull):
+        bull: +0.021%/trade  edge=2.0/dir=0.80/sell=0.50         ✅
+        side: +0.323%/trade  edge=5.0/dir=0.55/sell=0.50         ✅
+    → значит distribution drift'ит, и `bull=OFF` (Sprint 5) точно устарел.
+
+    ─────────────────────────────────────────────────────────────────────
+    ТЕКУЩАЯ СТРАТЕГИЯ DEFAULT (Sprint 9.5)
+    ─────────────────────────────────────────────────────────────────────
+    "Least bad" пороги из полного sweep — НЕ best in-sample, а наиболее
+    устойчивые на полных 19k сэмплов. Bull больше не отключён, т.к.:
+      1. На full sweep bull least bad из трёх (-0.151 vs side -0.164, bear -0.284)
+      2. На fresh данных bull прибыльный
+      3. `bull=OFF` дало 0% coverage в walk-forward → не торгуем вообще
+
+    ⚠️ Для production используйте walk_forward `--adaptive-thresholds` (B-22)
+    вместо этих DEFAULT — quantile-based thresholds стабильнее под drift.
     """
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Sprint 10 (2026-05-06): per-ticker blacklist — модель плохо калибрована
+    # для этих тикеров (ECE > 18% даже после Platt scaling).
+    # Обновлено после ребилда с quantile heads (2026-05-06):
+    #   AFLT 30.96% (-), OZON 27.71% (-), HEAD 23.47% (новый),
+    #   ENPG 19.25% (новый), LENT 18.33% (новый)
+    # TATN, VKCO, CBOM выпали из blacklist (их ECE улучшился после ребилда).
+    # Сделки на blacklist'е форсятся в HOLD — лучше пропустить чем торговать
+    # на шумных вероятностях. Список собирается из reliability_report и
+    # должен периодически пересматриваться (после каждого ребилда V3).
+    # ─────────────────────────────────────────────────────────────────────
+    TICKER_BLACKLIST: frozenset[str] = frozenset({
+        "AFLT", "OZON", "HEAD", "ENPG", "LENT",
+    })
 
     # Регимы: 0=bear, 1=side, 2=bull
     DEFAULT_REGIME_THRESHOLDS = {
-        0: {  # bear: модель работает лучше всего
-            "min_edge_ratio": 7.0,
-            "min_dir_prob": 0.80,
-            "min_sell_dir_prob": 0.50,
-            "min_fill_prob": 0.40,
-            "min_rr": 1.2,
+        0: {  # bear: рынок падает — модель нашла лучшее на full sweep
+            "min_edge_ratio":      2.0,   # Sprint 5: 7.0 → 2.0 (низкий cost-bar нужен в bear)
+            "min_dir_prob":        0.80,
+            "min_sell_dir_prob":   0.50,
+            "min_fill_prob":       0.40,
+            "min_rr":              1.2,
         },
-        1: {  # side: на грани прибыльности — мягче пороги для большего N
-            "min_edge_ratio": 6.5,
-            "min_dir_prob": 0.55,
-            "min_sell_dir_prob": 0.50,
-            "min_fill_prob": 0.40,
-            "min_rr": 1.2,
+        1: {  # side: боковик — умеренный edge cutoff
+            "min_edge_ratio":      4.0,   # Sprint 5: 6.5 → 4.0
+            "min_dir_prob":        0.80,  # Sprint 5: 0.55 → 0.80 (требуем уверенности)
+            "min_sell_dir_prob":   0.50,
+            "min_fill_prob":       0.40,
+            "min_rr":              1.2,
         },
-        2: {  # bull: убыточно — отключаем торговлю (нереализуемые пороги)
-            "min_edge_ratio": 99.0,
-            "min_dir_prob": 0.99,
-            "min_sell_dir_prob": 0.99,
-            "min_fill_prob": 0.99,
-            "min_rr": 99.0,
+        2: {  # bull: enabled (Sprint 5 OFF устарел, см. docstring)
+            "min_edge_ratio":      5.0,   # Sprint 5: 99.0 (OFF) → 5.0 (enabled)
+            "min_dir_prob":        0.75,
+            "min_sell_dir_prob":   0.50,
+            "min_fill_prob":       0.40,
+            "min_rr":              1.2,
         },
         -1: {  # unknown regime: fallback на B-15 default
-            "min_edge_ratio": 5.0,
-            "min_dir_prob": 0.75,
-            "min_sell_dir_prob": 0.55,
-            "min_fill_prob": 0.40,
-            "min_rr": 1.2,
+            "min_edge_ratio":      5.0,
+            "min_dir_prob":        0.75,
+            "min_sell_dir_prob":   0.55,
+            "min_fill_prob":       0.40,
+            "min_rr":              1.2,
         },
     }
     REGIME_NAMES = {0: "bear", 1: "side", 2: "bull", -1: "unknown"}
@@ -249,9 +297,14 @@ class RegimeAwareDecisionLayer:
         self,
         costs: Optional[TradingCosts] = None,
         regime_thresholds: Optional[dict[int, dict]] = None,
+        ticker_blacklist: Optional[frozenset[str]] = None,
     ):
         self.costs = costs or TradingCosts()
         self.regime_thresholds = regime_thresholds or self.DEFAULT_REGIME_THRESHOLDS
+        # Sprint 10: ticker_blacklist=None → используем class default; пустой
+        # set отключит blacklist (например, для walk-forward на чистых данных).
+        self.ticker_blacklist = (self.TICKER_BLACKLIST if ticker_blacklist is None
+                                 else frozenset(ticker_blacklist))
         # Pre-build per-regime DecisionLayer instances
         self._layers: dict[int, DecisionLayer] = {}
         for rid, params in self.regime_thresholds.items():
@@ -265,13 +318,24 @@ class RegimeAwareDecisionLayer:
         edge_pred:  np.ndarray,
         regime:     np.ndarray,                   # [N] int8: 0=bear, 1=side, 2=bull, -1=unknown
         extremes:   Optional[np.ndarray] = None,  # [N, 2] — Sprint 8.1
+        tickers:    Optional[np.ndarray] = None,  # Sprint 10: для blacklist-фильтра
     ) -> dict:
         """Применяет per-regime пороги. Сэмплы группируются по regime ID,
         для каждой группы вызывается соответствующий DecisionLayer.
+
+        Sprint 10: если tickers переданы и self.ticker_blacklist непуст,
+        blacklist'нутые тикеры force-HOLD'ятся (модель шумит на них).
         """
         n = len(dir_prob)
         signal     = np.full(n, SIG_HOLD, dtype=np.int64)
         confidence = np.zeros(n, dtype=np.float32)
+
+        # Sprint 10: blacklist mask. NB: применяется ПОСЛЕ per-regime decision,
+        # чтобы статистика coverage_per_regime отражала фактический blacklist effect.
+        blacklist_mask = None
+        if tickers is not None and self.ticker_blacklist:
+            blacklist_mask = np.array([str(t) in self.ticker_blacklist
+                                       for t in tickers], dtype=bool)
 
         unique_regimes = np.unique(regime)
         for rid in unique_regimes:
@@ -292,9 +356,18 @@ class RegimeAwareDecisionLayer:
             signal[mask]     = out["signal"]
             confidence[mask] = out["confidence"]
 
+        if blacklist_mask is not None and blacklist_mask.any():
+            n_filtered = int((signal[blacklist_mask] != SIG_HOLD).sum())
+            signal[blacklist_mask]     = SIG_HOLD
+            confidence[blacklist_mask] = 0.0
+            if n_filtered > 0:
+                # Молчаливая статистика — пишем в результат для downstream-логирования
+                pass
+
         return {
             "signal":     signal,
             "confidence": confidence,
+            "blacklist_filtered": (int(blacklist_mask.sum()) if blacklist_mask is not None else 0),
         }
 
     def coverage_per_regime(self, signal: np.ndarray, regime: np.ndarray) -> dict:

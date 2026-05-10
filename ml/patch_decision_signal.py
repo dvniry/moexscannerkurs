@@ -84,15 +84,30 @@ def main():
                   f"dir={params['min_dir_prob']:.2f} sell={params['min_sell_dir_prob']:.2f}  "
                   f"N={n_r}{tag}")
 
+        # Sprint 10 B: предпочитаем dir_prob_platt если он есть в npz
+        dir_src_key = ("dir_prob_platt"      if "dir_prob_platt"      in existing else
+                       "dir_prob_calibrated" if "dir_prob_calibrated" in existing else
+                       "dir_prob")
+        print(f"\n  Источник dir_prob: {dir_src_key}")
+
+        # Sprint 10: tickers для blacklist-фильтра (опционально)
+        tickers = (existing["test_tickers"] if "test_tickers" in existing
+                   else None)
+
         out = rdl.decide_numpy(
-            dir_prob  = existing["dir_prob"].astype(np.float32),
+            dir_prob  = existing[dir_src_key].astype(np.float32),
             mfe_mae   = existing["mfe_mae_pred"].astype(np.float32),
             fill_prob = existing["fill_prob"].astype(np.float32),
             edge_pred = existing["edge_pred"].astype(np.float32),
             regime    = regime,
+            tickers   = tickers,
         )
         new_sig  = out["signal"]
         new_conf = out["confidence"]
+        bl_filtered = out.get("blacklist_filtered", 0)
+        if bl_filtered:
+            print(f"  Blacklist отсёк {bl_filtered} сэмплов "
+                  f"(тикеры: {sorted(rdl.ticker_blacklist)})")
 
         # Per-regime breakdown
         cov_per = rdl.coverage_per_regime(new_sig, regime)

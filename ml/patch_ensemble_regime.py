@@ -1,11 +1,42 @@
 """Sprint 5 / Idea #3: добавляет HMM regime tag в существующий ensemble_predictions.npz
 без перетренировки V3.
 
-HMM regime хранится в последних 3 столбцах ctx (one-hot: bear=0, side=1, bull=2).
-Для каждого test-сэмпла берём `ctx_ticker[local_idx, -3:]` и argmax → regime ID.
+═══════════════════════════════════════════════════════════════════════════════
+ПОЧЕМУ ОТДЕЛЬНЫЙ СКРИПТ, А НЕ ЧАСТЬ ТРЕНИНГА?
+═══════════════════════════════════════════════════════════════════════════════
 
-Реконструируем ticker_lengths напрямую из cache_v3 без вызова
-build_full_multiscale_dataset_v3 (избегаем зависимость от litestar).
+Когда Sprint 5 был задуман (введение per-regime DecisionLayer), V3 модель
+УЖЕ обучилась и `ensemble_predictions.npz` УЖЕ существовал. Альтернатива
+"добавить regime в trainer_v3._save_test_predictions" требовала:
+  1. Перетренировать ансамбль (3 seeds × ~30 мин = 1.5 часа на одной 4050)
+  2. Перестроить пайплайн с нуля
+  3. Потерять текущие cls_probs/edge_pred/extremes артефакты
+
+Patch-стратегия даёт идентичный результат за 10 секунд:
+  - HMM regime УЖЕ зашит в `ctx[:, -3:]` (см. context_loader.py::_hmm_regime).
+  - cache_v3/ctx_{ticker}.npy содержит per-bar 21-мерный context vector.
+  - Нужно только пройти test_indices, прочитать regime из ctx и записать рядом.
+
+Когда **рекомендуется** перенести логику в trainer_v3 (т.е. избавиться от patch):
+  - после следующей пересборки V3 cache (cache v3.9.0+) — добавить test_regime
+    как один из output ключей в `_save_test_predictions`. Этот скрипт оставить
+    для обратной совместимости со старыми npz.
+
+═══════════════════════════════════════════════════════════════════════════════
+КАК РАБОТАЕТ
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Реконструируем ticker_lengths из cache_v3/cls_*.npy (без вызова
+   build_full_multiscale_dataset_v3 — избегаем зависимость от litestar).
+2. Реплицируем `temporal_split` из dataset_v3 → получаем test global indices
+   в том же порядке, что и dataset.records (по которому V3 сохранял y_test).
+3. Для каждого test-сэмпла читаем `ctx_ticker[local_idx, -3:]`, делаем argmax
+   → regime ID (0=bear, 1=side, 2=bull).
+4. Дописываем `test_regime[N]` в существующий npz через `np.savez(**existing, test_regime=...)`.
+
+ВАЖНО: порядок тикеров алфавитный (как в CFG.tickers); порядок индексов внутри
+тикера — chronological (как `cls_{ticker}.npy`). Это идентично dataset_v3, иначе
+regime не выровняется с y_test и расчёт hit_rate станет ложным.
 
 Использование:
     py -m ml.patch_ensemble_regime

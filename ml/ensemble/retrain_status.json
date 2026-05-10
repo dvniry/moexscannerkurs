@@ -1,0 +1,1081 @@
+{
+  "runs": [
+    {
+      "ts": "2026-05-04 18:59:29",
+      "rebuild": "incremental",
+      "elapsed_s": 0.0,
+      "stages": [
+        {
+          "n": 91,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 92,
+          "name": "Bull regime check",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 93,
+          "name": "Reliability + Brier",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 94,
+          "name": "Hourly split diagnostics",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 95,
+          "name": "Path-aware unit tests",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 96,
+          "name": "MetaV3 holdout eval",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-04 19:00:04",
+      "rebuild": "incremental",
+      "elapsed_s": 11.5,
+      "stages": [
+        {
+          "n": 91,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.4
+        },
+        {
+          "n": 92,
+          "name": "Bull regime check",
+          "status": "OK",
+          "elapsed_s": 2.2
+        },
+        {
+          "n": 93,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.3
+        },
+        {
+          "n": 94,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.4
+        },
+        {
+          "n": 95,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 2.4
+        },
+        {
+          "n": 96,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 3.8
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-04 19:58:40",
+      "rebuild": "incremental",
+      "elapsed_s": 81.9,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "OK",
+          "elapsed_s": 53.9
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "OK",
+          "elapsed_s": 8.2
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "OK",
+          "elapsed_s": 8.7
+        },
+        {
+          "n": 91,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.7
+        },
+        {
+          "n": 92,
+          "name": "Bull regime check",
+          "status": "OK",
+          "elapsed_s": 2.3
+        },
+        {
+          "n": 93,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.3
+        },
+        {
+          "n": 94,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.5
+        },
+        {
+          "n": 95,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 2.6
+        },
+        {
+          "n": 96,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.7
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-04 23:35:20",
+      "rebuild": "all",
+      "elapsed_s": 60.1,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "OK",
+          "elapsed_s": 35.8
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "OK",
+          "elapsed_s": 6.6
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "OK",
+          "elapsed_s": 7.8
+        },
+        {
+          "n": 91,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.3
+        },
+        {
+          "n": 92,
+          "name": "Bull regime check",
+          "status": "OK",
+          "elapsed_s": 2.1
+        },
+        {
+          "n": 93,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.3
+        },
+        {
+          "n": 94,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.4
+        },
+        {
+          "n": 95,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 2.4
+        },
+        {
+          "n": 96,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.5
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-04 23:36:39",
+      "rebuild": "all",
+      "elapsed_s": 4.3,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 91,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.3
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-04 23:37:21",
+      "rebuild": "all",
+      "elapsed_s": 0.0,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-05 21:45:28",
+      "rebuild": "incremental",
+      "elapsed_s": 16.2,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-05 21:46:09",
+      "rebuild": "incremental",
+      "elapsed_s": 2.7,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-05 23:14:08",
+      "rebuild": "all",
+      "elapsed_s": 1229.9,
+      "stages": [
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "OK",
+          "elapsed_s": 2.1
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "OK",
+          "elapsed_s": 63.1
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "OK",
+          "elapsed_s": 1040.5
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "OK",
+          "elapsed_s": 7.9
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "OK",
+          "elapsed_s": 10.2
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "OK",
+          "elapsed_s": 83.7
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "OK",
+          "elapsed_s": 10.3
+        },
+        {
+          "n": 91,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.7
+        },
+        {
+          "n": 92,
+          "name": "Bull regime check",
+          "status": "OK",
+          "elapsed_s": 2.5
+        },
+        {
+          "n": 93,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.3
+        },
+        {
+          "n": 94,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.5
+        },
+        {
+          "n": 95,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 3.3
+        },
+        {
+          "n": 96,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.8
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-05 23:34:27",
+      "rebuild": "incremental",
+      "elapsed_s": 10.8,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 9,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.5
+        },
+        {
+          "n": 10,
+          "name": "Bull regime check",
+          "status": "OK",
+          "elapsed_s": 2.3
+        },
+        {
+          "n": 11,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.3
+        },
+        {
+          "n": 12,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.4
+        },
+        {
+          "n": 13,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 2.6
+        },
+        {
+          "n": 14,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.6
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-06 10:28:41",
+      "rebuild": "incremental",
+      "elapsed_s": 64.0,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "OK",
+          "elapsed_s": 41.4
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "OK",
+          "elapsed_s": 6.0
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "OK",
+          "elapsed_s": 7.1
+        },
+        {
+          "n": 9,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.1
+        },
+        {
+          "n": 10,
+          "name": "Bull regime check",
+          "status": "FAIL",
+          "elapsed_s": 2.0
+        },
+        {
+          "n": 11,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.3
+        },
+        {
+          "n": 12,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.4
+        },
+        {
+          "n": 13,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 2.4
+        },
+        {
+          "n": 14,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.4
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-07 04:33:15",
+      "rebuild": "incremental",
+      "elapsed_s": 125.1,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "OK",
+          "elapsed_s": 96.5
+        },
+        {
+          "n": 35,
+          "name": "Platt calibration",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "OK",
+          "elapsed_s": 8.0
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "OK",
+          "elapsed_s": 9.2
+        },
+        {
+          "n": 9,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.5
+        },
+        {
+          "n": 10,
+          "name": "Bull regime check",
+          "status": "FAIL",
+          "elapsed_s": 2.5
+        },
+        {
+          "n": 11,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.4
+        },
+        {
+          "n": 12,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.5
+        },
+        {
+          "n": 13,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 2.8
+        },
+        {
+          "n": 14,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.8
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-09 04:20:46",
+      "rebuild": "ensemble",
+      "elapsed_s": 9582.7,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "OK",
+          "elapsed_s": 9435.4
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "OK",
+          "elapsed_s": 0.6
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "OK",
+          "elapsed_s": 89.7
+        },
+        {
+          "n": 35,
+          "name": "Platt calibration",
+          "status": "OK",
+          "elapsed_s": 33.3
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "OK",
+          "elapsed_s": 6.7
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "OK",
+          "elapsed_s": 6.9
+        },
+        {
+          "n": 9,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.3
+        },
+        {
+          "n": 10,
+          "name": "Bull regime check",
+          "status": "OK",
+          "elapsed_s": 2.1
+        },
+        {
+          "n": 11,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.3
+        },
+        {
+          "n": 12,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.4
+        },
+        {
+          "n": 13,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 2.7
+        },
+        {
+          "n": 14,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.3
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-09 19:02:12",
+      "rebuild": "incremental",
+      "elapsed_s": 127.0,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "OK",
+          "elapsed_s": 59.9
+        },
+        {
+          "n": 35,
+          "name": "Platt calibration",
+          "status": "OK",
+          "elapsed_s": 39.5
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "OK",
+          "elapsed_s": 8.1
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "OK",
+          "elapsed_s": 8.4
+        },
+        {
+          "n": 9,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.4
+        },
+        {
+          "n": 10,
+          "name": "Bull regime check",
+          "status": "FAIL",
+          "elapsed_s": 2.3
+        },
+        {
+          "n": 11,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.3
+        },
+        {
+          "n": 12,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.5
+        },
+        {
+          "n": 13,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 3.1
+        },
+        {
+          "n": 14,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.6
+        }
+      ]
+    },
+    {
+      "ts": "2026-05-10 19:49:09",
+      "rebuild": "incremental",
+      "elapsed_s": 91.7,
+      "stages": [
+        {
+          "n": 1,
+          "name": "V3 ensemble",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 2,
+          "name": "Patch regime",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 3,
+          "name": "Temperature calibration",
+          "status": "OK",
+          "elapsed_s": 35.3
+        },
+        {
+          "n": 35,
+          "name": "Platt calibration",
+          "status": "OK",
+          "elapsed_s": 32.5
+        },
+        {
+          "n": 4,
+          "name": "HourlySpecialist",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 5,
+          "name": "Meta v2 features+train",
+          "status": "OK",
+          "elapsed_s": 6.8
+        },
+        {
+          "n": 6,
+          "name": "Fundamentals API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 7,
+          "name": "Dividends API",
+          "status": "SKIP",
+          "elapsed_s": 0.0
+        },
+        {
+          "n": 8,
+          "name": "MetaLearner v3",
+          "status": "OK",
+          "elapsed_s": 7.3
+        },
+        {
+          "n": 9,
+          "name": "Walk-forward (purged + adaptive)",
+          "status": "OK",
+          "elapsed_s": 2.1
+        },
+        {
+          "n": 10,
+          "name": "Bull regime check",
+          "status": "FAIL",
+          "elapsed_s": 2.0
+        },
+        {
+          "n": 11,
+          "name": "Reliability + Brier",
+          "status": "OK",
+          "elapsed_s": 0.2
+        },
+        {
+          "n": 12,
+          "name": "Hourly split diagnostics",
+          "status": "OK",
+          "elapsed_s": 0.4
+        },
+        {
+          "n": 13,
+          "name": "Path-aware unit tests",
+          "status": "OK",
+          "elapsed_s": 2.7
+        },
+        {
+          "n": 14,
+          "name": "MetaV3 holdout eval",
+          "status": "OK",
+          "elapsed_s": 2.3
+        }
+      ]
+    }
+  ]
+}

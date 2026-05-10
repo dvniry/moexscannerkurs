@@ -1,0 +1,627 @@
+{
+  "global": {
+    "a": 0.1642,
+    "b": -0.0293
+  },
+  "n_val": 14381,
+  "seeds": [
+    42,
+    123,
+    7
+  ],
+  "per_ticker": {
+    "AFKS": {
+      "a": 0.8127,
+      "b": 0.2932
+    },
+    "AFLT": {
+      "a": 0.9492,
+      "b": 0.8554
+    },
+    "ALRS": {
+      "a": 0.1,
+      "b": -0.126
+    },
+    "BANEP": {
+      "a": 0.1045,
+      "b": 0.0365
+    },
+    "BSPB": {
+      "a": 0.1,
+      "b": 0.1754
+    },
+    "CBOM": {
+      "a": 0.1,
+      "b": 0.2053
+    },
+    "CHMF": {
+      "a": 0.5287,
+      "b": 0.1534
+    },
+    "ENPG": {
+      "a": 0.6892,
+      "b": 0.6703
+    },
+    "FEES": {
+      "a": 0.1,
+      "b": -0.39
+    },
+    "FESH": {
+      "a": 0.4526,
+      "b": -0.085
+    },
+    "FLOT": {
+      "a": 0.3691,
+      "b": 0.3397
+    },
+    "GAZP": {
+      "a": 0.2026,
+      "b": -0.2106
+    },
+    "GMKN": {
+      "a": 0.4591,
+      "b": -0.1406
+    },
+    "HEAD": {
+      "a": 0.6713,
+      "b": 0.4136
+    },
+    "HYDR": {
+      "a": 0.1,
+      "b": -0.489
+    },
+    "IRAO": {
+      "a": 0.1,
+      "b": -0.1683
+    },
+    "KAZT": {
+      "a": 0.7819,
+      "b": 0.2786
+    },
+    "LENT": {
+      "a": 0.3221,
+      "b": 0.5444
+    },
+    "LKOH": {
+      "a": 0.1,
+      "b": 0.2293
+    },
+    "LSRG": {
+      "a": 0.4884,
+      "b": 0.2504
+    },
+    "MAGN": {
+      "a": 0.2544,
+      "b": -0.028
+    },
+    "MGNT": {
+      "a": 0.1991,
+      "b": -0.0122
+    },
+    "MOEX": {
+      "a": 0.1732,
+      "b": 0.0917
+    },
+    "MSNG": {
+      "a": 0.1,
+      "b": -0.2769
+    },
+    "MTLR": {
+      "a": 0.1,
+      "b": -0.3193
+    },
+    "MTSS": {
+      "a": 0.8201,
+      "b": 0.2266
+    },
+    "NKNC": {
+      "a": 0.557,
+      "b": -0.1211
+    },
+    "NLMK": {
+      "a": 0.2814,
+      "b": -0.0359
+    },
+    "NMTP": {
+      "a": 0.1522,
+      "b": -0.1888
+    },
+    "NVTK": {
+      "a": 0.1,
+      "b": -0.3733
+    },
+    "OGKB": {
+      "a": 0.1,
+      "b": -0.3887
+    },
+    "OZON": {
+      "a": 0.1,
+      "b": 0.7918
+    },
+    "PHOR": {
+      "a": 0.1,
+      "b": -0.1191
+    },
+    "PIKK": {
+      "a": 0.6503,
+      "b": -0.0673
+    },
+    "PLZL": {
+      "a": 0.1,
+      "b": 0.3787
+    },
+    "RASP": {
+      "a": 0.1,
+      "b": -0.1083
+    },
+    "ROSN": {
+      "a": 0.1,
+      "b": -0.0618
+    },
+    "RTKM": {
+      "a": 0.1,
+      "b": -0.1345
+    },
+    "RUAL": {
+      "a": 0.5947,
+      "b": 0.0064
+    },
+    "SBER": {
+      "a": 0.1,
+      "b": 0.2911
+    },
+    "SBERP": {
+      "a": 0.1,
+      "b": 0.2733
+    },
+    "SELG": {
+      "a": 0.2378,
+      "b": -0.2633
+    },
+    "SIBN": {
+      "a": 0.1,
+      "b": -0.0379
+    },
+    "SMLT": {
+      "a": 0.1,
+      "b": -0.2663
+    },
+    "SNGS": {
+      "a": 0.2091,
+      "b": -0.2679
+    },
+    "T": {
+      "a": 0.1,
+      "b": 0.3161
+    },
+    "TATN": {
+      "a": 0.1,
+      "b": 0.2463
+    },
+    "TATNP": {
+      "a": 0.1,
+      "b": 0.2231
+    },
+    "TRMK": {
+      "a": 0.9693,
+      "b": -0.1238
+    },
+    "TRNFP": {
+      "a": 0.1,
+      "b": -0.0721
+    },
+    "UGLD": {
+      "a": 1.7926,
+      "b": -0.4303
+    },
+    "UPRO": {
+      "a": 0.1,
+      "b": -0.049
+    },
+    "VKCO": {
+      "a": 0.2399,
+      "b": 0.2252
+    },
+    "VTBR": {
+      "a": 0.1,
+      "b": -0.5421
+    },
+    "YDEX": {
+      "a": 0.1,
+      "b": 0.2111
+    }
+  },
+  "coverage_report": {
+    "AFKS": {
+      "n_samples": 280,
+      "a": 0.8127,
+      "b": 0.2932,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "AFLT": {
+      "n_samples": 285,
+      "a": 0.9492,
+      "b": 0.8554,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "ALRS": {
+      "n_samples": 295,
+      "a": 0.1,
+      "b": -0.126,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "BANEP": {
+      "n_samples": 285,
+      "a": 0.1045,
+      "b": 0.0365,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "BSPB": {
+      "n_samples": 293,
+      "a": 0.1,
+      "b": 0.1754,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "CBOM": {
+      "n_samples": 309,
+      "a": 0.1,
+      "b": 0.2053,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "CHMF": {
+      "n_samples": 275,
+      "a": 0.5287,
+      "b": 0.1534,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "ENPG": {
+      "n_samples": 179,
+      "a": 0.6892,
+      "b": 0.6703,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "FEES": {
+      "n_samples": 278,
+      "a": 0.1,
+      "b": -0.39,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "FESH": {
+      "n_samples": 275,
+      "a": 0.4526,
+      "b": -0.085,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "FLOT": {
+      "n_samples": 140,
+      "a": 0.3691,
+      "b": 0.3397,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "GAZP": {
+      "n_samples": 295,
+      "a": 0.2026,
+      "b": -0.2106,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "GMKN": {
+      "n_samples": 291,
+      "a": 0.4591,
+      "b": -0.1406,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "HEAD": {
+      "n_samples": 158,
+      "a": 0.6713,
+      "b": 0.4136,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "HYDR": {
+      "n_samples": 279,
+      "a": 0.1,
+      "b": -0.489,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "IRAO": {
+      "n_samples": 276,
+      "a": 0.1,
+      "b": -0.1683,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "KAZT": {
+      "n_samples": 203,
+      "a": 0.7819,
+      "b": 0.2786,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "LENT": {
+      "n_samples": 128,
+      "a": 0.3221,
+      "b": 0.5444,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "LKOH": {
+      "n_samples": 283,
+      "a": 0.1,
+      "b": 0.2293,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "LSRG": {
+      "n_samples": 282,
+      "a": 0.4884,
+      "b": 0.2504,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "MAGN": {
+      "n_samples": 270,
+      "a": 0.2544,
+      "b": -0.028,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "MGNT": {
+      "n_samples": 274,
+      "a": 0.1991,
+      "b": -0.0122,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "MOEX": {
+      "n_samples": 299,
+      "a": 0.1732,
+      "b": 0.0917,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "MSNG": {
+      "n_samples": 284,
+      "a": 0.1,
+      "b": -0.2769,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "MTLR": {
+      "n_samples": 295,
+      "a": 0.1,
+      "b": -0.3193,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "MTSS": {
+      "n_samples": 279,
+      "a": 0.8201,
+      "b": 0.2266,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "NKNC": {
+      "n_samples": 275,
+      "a": 0.557,
+      "b": -0.1211,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "NLMK": {
+      "n_samples": 290,
+      "a": 0.2814,
+      "b": -0.0359,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "NMTP": {
+      "n_samples": 266,
+      "a": 0.1522,
+      "b": -0.1888,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "NVTK": {
+      "n_samples": 300,
+      "a": 0.1,
+      "b": -0.3733,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "OGKB": {
+      "n_samples": 270,
+      "a": 0.1,
+      "b": -0.3887,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "OZON": {
+      "n_samples": 132,
+      "a": 0.1,
+      "b": 0.7918,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "PHOR": {
+      "n_samples": 306,
+      "a": 0.1,
+      "b": -0.1191,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "PIKK": {
+      "n_samples": 285,
+      "a": 0.6503,
+      "b": -0.0673,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "PLZL": {
+      "n_samples": 296,
+      "a": 0.1,
+      "b": 0.3787,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "RASP": {
+      "n_samples": 293,
+      "a": 0.1,
+      "b": -0.1083,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "ROSN": {
+      "n_samples": 266,
+      "a": 0.1,
+      "b": -0.0618,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "RTKM": {
+      "n_samples": 284,
+      "a": 0.1,
+      "b": -0.1345,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "RUAL": {
+      "n_samples": 295,
+      "a": 0.5947,
+      "b": 0.0064,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "SBER": {
+      "n_samples": 276,
+      "a": 0.1,
+      "b": 0.2911,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "SBERP": {
+      "n_samples": 267,
+      "a": 0.1,
+      "b": 0.2733,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "SELG": {
+      "n_samples": 288,
+      "a": 0.2378,
+      "b": -0.2633,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "SIBN": {
+      "n_samples": 281,
+      "a": 0.1,
+      "b": -0.0379,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "SMLT": {
+      "n_samples": 169,
+      "a": 0.1,
+      "b": -0.2663,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "SNGS": {
+      "n_samples": 284,
+      "a": 0.2091,
+      "b": -0.2679,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "T": {
+      "n_samples": 325,
+      "a": 0.1,
+      "b": 0.3161,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "TATN": {
+      "n_samples": 264,
+      "a": 0.1,
+      "b": 0.2463,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "TATNP": {
+      "n_samples": 264,
+      "a": 0.1,
+      "b": 0.2231,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "TRMK": {
+      "n_samples": 277,
+      "a": 0.9693,
+      "b": -0.1238,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "TRNFP": {
+      "n_samples": 290,
+      "a": 0.1,
+      "b": -0.0721,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "UGLD": {
+      "n_samples": 67,
+      "a": 1.7926,
+      "b": -0.4303,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "UPRO": {
+      "n_samples": 289,
+      "a": 0.1,
+      "b": -0.049,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "VKCO": {
+      "n_samples": 151,
+      "a": 0.2399,
+      "b": 0.2252,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "VTBR": {
+      "n_samples": 266,
+      "a": 0.1,
+      "b": -0.5421,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    },
+    "YDEX": {
+      "n_samples": 275,
+      "a": 0.1,
+      "b": 0.2111,
+      "used_fallback": false,
+      "reason": "fit_ok"
+    }
+  },
+  "min_samples_threshold": 30,
+  "n_fitted": 55,
+  "n_fallback": 0,
+  "platt_valid": true,
+  "ece_raw_val": 12.8293,
+  "ece_platt_val": 0.6555
+}

@@ -169,7 +169,8 @@ def calibrate(seeds=(42, 123, 7),
             ctx_dim=ctx_dim, n_indicator_cols=n_ind,
             future_bars=CFG.future_bars, use_hourly=True,
         ).to(device)
-        m.load_state_dict(torch.load(path, map_location=device, weights_only=True))
+        m.load_state_dict(torch.load(path, map_location=device, weights_only=True),
+                          strict=False)  # Sprint 11.1: tolerant к quantile_head
         m.eval()
         models.append(m)
         print(f'  Загружен seed {seed}')
