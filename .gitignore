@@ -12,6 +12,7 @@ _meta.json
 итог прогона.txt
 mt5_signals
 .directory
+ensemble/
 # Environment
 .env
 .env.*
