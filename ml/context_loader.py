@@ -88,7 +88,7 @@ def _load_indicative_chunked(client, sym: str) -> 'pd.DataFrame | None':
 
 
 def load_context_series(ticker: str) -> 'pd.DataFrame | None':
-    from api.routes.candles import get_client
+    from data.tinkoff_factory import get_client
     client  = get_client()
     symbols = SECTOR_CONTEXT.get(ticker, SECTOR_CONTEXT["__default__"])
     frames  = {}

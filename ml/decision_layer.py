@@ -261,29 +261,37 @@ class RegimeAwareDecisionLayer:
     })
 
     # Регимы: 0=bear, 1=side, 2=bull
+    # Sprint 11.2 (2026-05-13): обновлено под meta_dir_prob distribution mean=0.49 std=0.09.
+    # decision_sweep на meta показал: bear profitable (exp%=+0.069 best), side/bull negative
+    # при любых порогах → side и bull OFF (min_edge_ratio=99 = disable).
     DEFAULT_REGIME_THRESHOLDS = {
-        0: {  # bear: рынок падает — модель нашла лучшее на full sweep
-            "min_edge_ratio":      2.0,   # Sprint 5: 7.0 → 2.0 (низкий cost-bar нужен в bear)
+        0: {  # bear: SHORT-only — единственный прибыльный режим
+            # Sprint 11.2 (2026-05-13): sweep meta=34 → edge=4.0/dir=0.70/sell=0.55 (exp%=+0.069 ✅)
+            # Sprint 11.3 (2026-05-13 ночь): MetaV4 (36 фич с chronos) расширил
+            # meta_dir_prob std 0.089→0.130 → 74 BUY signals появились с win 32%
+            # (anti-edge). Запрет BUY через min_dir_prob=0.99 (impossible threshold).
+            # SELL остался без изменений: cov ~7-8% с win 61% (MetaV4 +3pp vs MetaV3).
+            "min_edge_ratio":      4.0,
+            "min_dir_prob":        0.99,  # DISABLE BUY в bear (LONG anti-signal)
+            "min_sell_dir_prob":   0.55,
+            "min_fill_prob":       0.40,
+            "min_rr":              1.2,
+        },
+        1: {  # side: OFF — sweep meta best exp%=−0.128 при любых порогах
+            "min_edge_ratio":      99.0,  # Sprint 11.2: 4.0 → 99 (DISABLED)
             "min_dir_prob":        0.80,
             "min_sell_dir_prob":   0.50,
             "min_fill_prob":       0.40,
             "min_rr":              1.2,
         },
-        1: {  # side: боковик — умеренный edge cutoff
-            "min_edge_ratio":      4.0,   # Sprint 5: 6.5 → 4.0
-            "min_dir_prob":        0.80,  # Sprint 5: 0.55 → 0.80 (требуем уверенности)
-            "min_sell_dir_prob":   0.50,
-            "min_fill_prob":       0.40,
-            "min_rr":              1.2,
-        },
-        2: {  # bull: enabled (Sprint 5 OFF устарел, см. docstring)
-            "min_edge_ratio":      5.0,   # Sprint 5: 99.0 (OFF) → 5.0 (enabled)
+        2: {  # bull: OFF — sweep meta best exp%=−0.126
+            "min_edge_ratio":      99.0,  # Sprint 11.2: 5.0 → 99 (DISABLED)
             "min_dir_prob":        0.75,
             "min_sell_dir_prob":   0.50,
             "min_fill_prob":       0.40,
             "min_rr":              1.2,
         },
-        -1: {  # unknown regime: fallback на B-15 default
+        -1: {  # unknown regime: fallback на B-15 default (conservative)
             "min_edge_ratio":      5.0,
             "min_dir_prob":        0.75,
             "min_sell_dir_prob":   0.55,

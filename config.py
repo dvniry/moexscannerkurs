@@ -3,10 +3,33 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Безопасная загрузка .env с обработкой ошибок кодировки
+def _load_env_fallback(path: str = ".env") -> None:
+    """Минимальный fallback-парсер .env (KEY=VALUE) если python-dotenv не установлен."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip("'").strip('"')
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except UnicodeDecodeError:
+        print("⚠️  Ошибка чтения .env файла (неправильная кодировка)")
+        print("   Создайте .env файл в кодировке UTF-8")
+    except Exception as e:
+        print(f"⚠️  Ошибка загрузки .env (fallback): {e}")
+
+
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv  # type: ignore
     load_dotenv()
+except ImportError:
+    _load_env_fallback()
 except UnicodeDecodeError:
     print("⚠️  Ошибка чтения .env файла (неправильная кодировка)")
     print("   Создайте .env файл в кодировке UTF-8")
@@ -15,6 +38,7 @@ except FileNotFoundError:
     print("   Создайте файл .env с содержимым: TINKOFF_TOKEN=ваш_токен")
 except Exception as e:
     print(f"⚠️  Ошибка загрузки .env: {e}")
+    _load_env_fallback()
 
 
 @dataclass

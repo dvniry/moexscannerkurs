@@ -639,9 +639,14 @@ V3_FEATURE_NAMES = (
     # ── dividends (5) ──────────────────────────────────────────
     "div_days_to_record", "div_is_ex_today", "div_gap_pct",
     "div_dy_ttm", "div_density",
+    # ── Sprint 11.3: chronos uncertainty (2) ──────────────────
+    # chr_width   = mean(q90 - q10) over future bars; uncertainty proxy (узкая=уверенно)
+    # chr_q50_avg = mean(q50) — directional expected ΔC за горизонт (sanity, slabый сигнал)
+    # Fallback 0 для сэмплов без chronos coverage.
+    "chr_width", "chr_q50_avg",
 )
 META_V3_FEAT_DIM = len(V3_FEATURE_NAMES)
-assert META_V3_FEAT_DIM == 34, f"V3 schema mismatch: expected 34, got {META_V3_FEAT_DIM}"
+assert META_V3_FEAT_DIM == 36, f"V3 schema mismatch: expected 36, got {META_V3_FEAT_DIM}"
 
 
 class MetaLearnerV3(nn.Module):
@@ -821,8 +826,37 @@ def build_meta_features_v3() -> bool:
     n_with_div = int((div_block.sum(axis=1) > 0).sum())
     print(f"  dividend features: {n_with_div}/{n} сэмплов с ненулевыми флагами")
 
-    # 4) Сборка финального X
-    X_v3 = np.concatenate([X_v2, cls_block, fund_block, div_block], axis=1).astype(np.float32)
+    # 4) Sprint 11.3: Chronos uncertainty block (chr_width, chr_q50_avg)
+    # Берём mean(q90-q10) и mean(q50) по 5 future bars из ensemble_predictions.npz.
+    # Для сэмплов без has_chronos → fallback 0 (neutral).
+    chr_block = np.zeros((n, 2), dtype=np.float32)
+    n_with_chr = 0
+    if all(k in daily.files for k in ("chronos_close_q10", "chronos_close_q50",
+                                        "chronos_close_q90", "has_chronos")):
+        q10 = daily["chronos_close_q10"]
+        q50 = daily["chronos_close_q50"]
+        q90 = daily["chronos_close_q90"]
+        has_ch = daily["has_chronos"].astype(bool)
+        # Index lookup
+        chr_lookup: dict[tuple[str, str], np.ndarray] = {}
+        if d_tickers_full is not None and len(d_tickers_full) == len(q10):
+            for i, (d, t) in enumerate(zip(d_dates_full, d_tickers_full)):
+                if not has_ch[i]:
+                    continue
+                w_mean = float(np.nanmean(q90[i] - q10[i]))
+                m_mean = float(np.nanmean(q50[i]))
+                chr_lookup[(d, t)] = np.array([w_mean, m_mean], dtype=np.float32)
+        for i in range(n):
+            v = chr_lookup.get((str(dates[i]), str(tickers[i])))
+            if v is not None:
+                chr_block[i] = v
+                n_with_chr += 1
+        print(f"  chronos features: {n_with_chr}/{n} сэмплов с has_chronos")
+    else:
+        print(f"  [WARN] chronos_close_q* отсутствуют в npz → chr_width/chr_q50 = 0")
+
+    # 5) Сборка финального X (теперь 36 фич)
+    X_v3 = np.concatenate([X_v2, cls_block, fund_block, div_block, chr_block], axis=1).astype(np.float32)
     assert X_v3.shape[1] == META_V3_FEAT_DIM, \
         f"V3 dim mismatch: {X_v3.shape[1]} vs {META_V3_FEAT_DIM}"
     print(f"  X_v3.shape={X_v3.shape}  y={np.unique(y).tolist()}")

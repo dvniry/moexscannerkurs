@@ -84,18 +84,46 @@ def main():
                   f"dir={params['min_dir_prob']:.2f} sell={params['min_sell_dir_prob']:.2f}  "
                   f"N={n_r}{tag}")
 
-        # Sprint 10 B: предпочитаем dir_prob_platt если он есть в npz
-        dir_src_key = ("dir_prob_platt"      if "dir_prob_platt"      in existing else
-                       "dir_prob_calibrated" if "dir_prob_calibrated" in existing else
-                       "dir_prob")
-        print(f"\n  Источник dir_prob: {dir_src_key}")
+        # Sprint 11.2: meta_dir_prob > dir_prob_platt > dir_prob_calibrated > dir_prob.
+        # meta_dir_prob — output MetaLearner v3 (34 фичи + non-linear), на 6-м ребилде
+        # holdout acc 0.5551 vs raw 0.5273 = +2.78pp. Записывается через
+        # `py -m ml.merge_meta_into_npz`. Покрытие частичное (~75%) — fallback на platt.
+        if "meta_dir_prob" in existing and "has_meta" in existing:
+            dir_src_key = "meta_dir_prob"
+            has_meta = existing["has_meta"].astype(bool)
+            n_meta = int(has_meta.sum())
+            print(f"\n  Источник dir_prob: meta_dir_prob "
+                  f"(coverage {n_meta}/{len(has_meta)} = {n_meta/len(has_meta)*100:.1f}%, "
+                  f"fallback на dir_prob_platt для пропусков)")
+        elif "dir_prob_platt" in existing:
+            dir_src_key = "dir_prob_platt"
+            print(f"\n  Источник dir_prob: dir_prob_platt")
+        elif "dir_prob_calibrated" in existing:
+            dir_src_key = "dir_prob_calibrated"
+            print(f"\n  Источник dir_prob: dir_prob_calibrated")
+        else:
+            dir_src_key = "dir_prob"
+            print(f"\n  Источник dir_prob: dir_prob (raw)")
 
         # Sprint 10: tickers для blacklist-фильтра (опционально)
         tickers = (existing["test_tickers"] if "test_tickers" in existing
                    else None)
 
+        dir_prob_input = existing[dir_src_key].astype(np.float32)
+        # Sprint 11.2: meta_dir_prob имеет NaN там, где нет (date,ticker) match.
+        # Fallback на dir_prob_platt → dir_prob_calibrated → dir_prob.
+        if dir_src_key == "meta_dir_prob":
+            nan_mask = ~np.isfinite(dir_prob_input)
+            n_nan = int(nan_mask.sum())
+            if n_nan > 0:
+                for fb_key in ("dir_prob_platt", "dir_prob_calibrated", "dir_prob"):
+                    if fb_key in existing:
+                        dir_prob_input[nan_mask] = existing[fb_key].astype(np.float32)[nan_mask]
+                        print(f"  Fallback {n_nan} NaN-сэмплов → {fb_key}")
+                        break
+
         out = rdl.decide_numpy(
-            dir_prob  = existing[dir_src_key].astype(np.float32),
+            dir_prob  = dir_prob_input,
             mfe_mae   = existing["mfe_mae_pred"].astype(np.float32),
             fill_prob = existing["fill_prob"].astype(np.float32),
             edge_pred = existing["edge_pred"].astype(np.float32),

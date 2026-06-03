@@ -263,6 +263,323 @@ def simulate_strategy(
 
 
 # ────────────────────────────────────────────────────────────
+# Sprint 11.2 D5 — quantile-driven execution
+# ────────────────────────────────────────────────────────────
+
+def simulate_quantile_strategy(
+    p_dir, cls_probs, quantile_pred_atr, ohlc_true_pct, atr_ratio, y_true,
+    *,
+    signal_threshold: float = 0.25,
+    max_position_pct: float = 0.02,
+    fee:              float = 0.001,
+    use_composite:    bool  = True,
+    future_bars:      int   = 5,
+    entry_q_idx:      int   = 0,   # 0 = q10 (pessimistic price), 1 = q50, 2 = q90
+    exit_q_idx:       int   = 2,   # для LONG TP — H_q90; для SHORT TP — L_q10
+    sl_buf_mult:      float = 1.5, # SL = entry * sl_buf_mult по другую сторону
+):
+    """Sprint 11.2 — D5_quantile execution. Использует quantile_pred напрямую.
+
+    Layout quantile_pred_atr [N, 60] = [O || H || L || C], каждый chunk [3*fb]:
+        [q10 × fb | q50 × fb | q90 × fb]
+    Значения в ATR-norm — умножаются на atr_ratio*sqrt(fb) для % через `norm_factor`.
+
+    Логика (entry_q_idx=0, exit_q_idx=2):
+      LONG  (s>0): entry = L_q10[t+1] (pessimistic low — низкая цена входа)
+                   TP    = H_q90[t+fb-1] (90-й перцентиль макс. за горизонт)
+                   SL    = L_q10[t+fb-1] * sl_buf_mult (худший low)
+                   fill: real_L[t+1..t+fb] <= entry в любом баре
+      SHORT (s<0): entry = H_q90[t+1] (optimistic high)
+                   TP    = L_q10[t+fb-1]
+                   SL    = H_q90[t+fb-1] * sl_buf_mult
+
+    Q-9 закрыт (O/C coverage 28-38%), но L/H остаются основными квантилями
+    для entry/exit (H/L coverage 45-48% > O/C). Используем L для LONG entry,
+    H для SHORT entry. Symmetric.
+    """
+    fb       = future_bars
+    n_q      = 3                                                # q10, q50, q90
+    chunk    = n_q * fb                                          # 15
+    B        = quantile_pred_atr.shape[0]
+    # Per-channel layout
+    quant    = quantile_pred_atr.reshape(B, 4, n_q, fb)          # [N, 4, 3, fb]
+    O, H, L, C = quant[:, 0], quant[:, 1], quant[:, 2], quant[:, 3]   # каждый [N, 3, fb]
+
+    # norm_factor приводит из ATR-norm в % (как и `ohlc_pred_pct`)
+    norm = (atr_ratio.astype(np.float64) * np.sqrt(fb))[:, None]       # [N, 1]
+
+    # Точечные предсказания (берём q50) для composite_signal — модель направления
+    ohlc_pred_q50_pct = np.stack(
+        [O[:, 1, 0] * atr_ratio,    # ΔO t+1 (q50, не пишется в общий норматив с fb)
+         H[:, 1, 0] * atr_ratio,
+         L[:, 1, 0] * atr_ratio,
+         C[:, 1, -1] * (atr_ratio * np.sqrt(fb))], axis=1)             # ΔC t+fb scaled
+    sig = (composite_signal(p_dir, cls_probs, ohlc_pred_q50_pct)
+           if use_composite else (p_dir - 0.5) * 2)
+
+    trades = []
+    n_long_signals = n_long_filled = 0
+    n_short_signals = n_short_filled = 0
+
+    for t in range(B):
+        s = sig[t]
+        if abs(s) < signal_threshold:
+            continue
+        nf = float(norm[t, 0])
+
+        if s > 0:
+            n_long_signals += 1
+            # entry: L_q[entry_q_idx] на t+1, в %
+            entry_delta = float(L[t, entry_q_idx, 0]) * nf
+            if abs(entry_delta) < MIN_TRADE_MOVE:
+                continue
+            # Fill check: actual real_L (t+1..t+fb) пробил entry?
+            # ohlc_true_pct содержит агрегированные ΔO, ΔH, ΔL, ΔC за весь горизонт fb.
+            # Используем real_L (samplewise low за период) как proxy.
+            real_L_pct = float(ohlc_true_pct[t, 2])
+            if real_L_pct > entry_delta:
+                continue
+            n_long_filled += 1
+            # TP — H_q[exit_q_idx] за t+fb (берём последний бар окна — оптимистично)
+            tp_price = float(H[t, exit_q_idx, -1]) * nf
+            # SL — L_q[0] на горизонте, но с buffer (pessimistic floor)
+            sl_price = float(L[t, 0, -1]) * nf * sl_buf_mult
+            real_H_pct = float(ohlc_true_pct[t, 1])
+            real_C_pct = float(ohlc_true_pct[t, 3])
+            sl_hit = real_L_pct <= sl_price
+            tp_hit = real_H_pct >= tp_price
+            if sl_hit and tp_hit:
+                # tie-break по близости — кто ближе к entry по target
+                rng = np.random.RandomState(t)
+                # BM-formula: P(TP) = |sl − entry| / (|sl − entry| + |tp − entry|)
+                ds = abs(sl_price - entry_delta); dt = abs(tp_price - entry_delta)
+                p_tp = ds / (ds + dt + 1e-9)
+                if rng.random() < p_tp:
+                    gross_pnl = tp_price - entry_delta; exit_type = 'TP_bm'
+                else:
+                    gross_pnl = sl_price - entry_delta; exit_type = 'SL_bm'
+            elif tp_hit:
+                gross_pnl = tp_price - entry_delta; exit_type = 'TP'
+            elif sl_hit:
+                gross_pnl = sl_price - entry_delta; exit_type = 'SL'
+            else:
+                gross_pnl = real_C_pct - entry_delta; exit_type = 'close'
+
+        else:
+            n_short_signals += 1
+            entry_delta = float(H[t, exit_q_idx, 0]) * nf
+            if abs(entry_delta) < MIN_TRADE_MOVE:
+                continue
+            real_H_pct = float(ohlc_true_pct[t, 1])
+            if real_H_pct < entry_delta:
+                continue
+            n_short_filled += 1
+            tp_price = float(L[t, entry_q_idx, -1]) * nf
+            sl_price = float(H[t, exit_q_idx, -1]) * nf * sl_buf_mult
+            real_L_pct = float(ohlc_true_pct[t, 2])
+            real_C_pct = float(ohlc_true_pct[t, 3])
+            sl_hit = real_H_pct >= sl_price
+            tp_hit = real_L_pct <= tp_price
+            if sl_hit and tp_hit:
+                rng = np.random.RandomState(t + 1_000_000)
+                ds = abs(sl_price - entry_delta); dt = abs(tp_price - entry_delta)
+                p_tp = ds / (ds + dt + 1e-9)
+                if rng.random() < p_tp:
+                    gross_pnl = entry_delta - tp_price; exit_type = 'TP_bm'
+                else:
+                    gross_pnl = entry_delta - sl_price; exit_type = 'SL_bm'
+            elif tp_hit:
+                gross_pnl = entry_delta - tp_price; exit_type = 'TP'
+            elif sl_hit:
+                gross_pnl = entry_delta - sl_price; exit_type = 'SL'
+            else:
+                gross_pnl = entry_delta - real_C_pct; exit_type = 'close'
+
+        position_size = max_position_pct * min(abs(s), 1.0)
+        net_pnl_pct   = gross_pnl - 2 * fee
+        pnl_capital   = net_pnl_pct * position_size
+        if abs(pnl_capital) > 0.05:
+            continue
+        trades.append({
+            't': int(t),
+            'direction': 'LONG' if s > 0 else 'SHORT',
+            'signal': float(s), 'size': float(position_size),
+            'entry_delta': float(entry_delta),
+            'gross_pnl': float(gross_pnl),
+            'net_pnl_pct': float(net_pnl_pct),
+            'pnl_capital': float(pnl_capital),
+            'exit': exit_type, 'true_cls': int(y_true[t]),
+        })
+
+    diag = {
+        'long_fill_rate':  n_long_filled  / max(n_long_signals, 1),
+        'short_fill_rate': n_short_filled / max(n_short_signals, 1),
+        'n_signals_long':  n_long_signals,
+        'n_signals_short': n_short_signals,
+    }
+    return trades, diag
+
+
+# ────────────────────────────────────────────────────────────
+# Sprint 11.3 D7 — Chronos quantile-band directional + calibrated TP/SL
+# ────────────────────────────────────────────────────────────
+
+def simulate_chronos_strategy(
+    chronos_q10, chronos_q50, chronos_q90,    # [N, fb] ATR-norm relative ΔC
+    has_chronos,                               # [N] bool
+    ohlc_true_pct,                             # [N, fb*4] row-major OHLC future
+    atr_ratio,                                 # [N]
+    y_true,
+    *,
+    fb: int = 5,
+    rr_ratio: float = 2.0,     # risk-reward: TP/SL distance ratio
+    fee: float = 0.001,
+    max_position_pct: float = 0.02,
+    close_only: bool = False,  # True = exit на close, без TP/SL (чистый directional test)
+    invert: str = "none",      # "none" | "long_only" | "short_only" | "both"
+):
+    """D7_chronos: использует Chronos quantile band как direction signal.
+
+    Direction:
+      c_q10, c_q50, c_q90 — относительные ΔC в ATR-norm на t+fb−1
+      - q10 > 0  → 80%+ prob close выше → LONG
+      - q90 < 0  → 80%+ prob close ниже → SHORT
+      - иначе    → HOLD (band straddles zero)
+
+    Exit:
+      close_only=True   → market entry, выход на close дня t+fb (чистый directional)
+      close_only=False  → TP = q50 (median expected), SL = −TP/rr_ratio (2:1 RR)
+                          В отличие от старой версии, SL гарантированно на противоположной
+                          стороне от entry: для LONG отрицательный, для SHORT положительный.
+    """
+    trades = []
+    N = len(chronos_q50)
+    norm = (atr_ratio.astype(np.float64) * np.sqrt(fb))
+    n_signals = 0; n_filled = 0
+
+    # Используем квантиль за t+fb−1 (последний бар горизонта)
+    last_bar = fb - 1
+
+    # Реальный ΔC за горизонт — последний C в окне
+    ohlc_3d = ohlc_true_pct.reshape(N, fb, 4)
+    real_C_last = ohlc_3d[:, last_bar, 3]   # ΔC в %
+    real_H_last = ohlc_3d[:, last_bar, 1]   # ΔH
+    real_L_last = ohlc_3d[:, last_bar, 2]   # ΔL
+
+    for t in range(N):
+        if not has_chronos[t]:
+            continue
+
+        # Chronos quantiles в ATR-norm → переводим в % (как ohlc_true_pct)
+        q10_atr = float(chronos_q10[t, last_bar])
+        q50_atr = float(chronos_q50[t, last_bar])
+        q90_atr = float(chronos_q90[t, last_bar])
+        if not (np.isfinite(q10_atr) and np.isfinite(q50_atr) and np.isfinite(q90_atr)):
+            continue
+
+        nf = float(norm[t])
+        q10_pct = q10_atr * nf
+        q50_pct = q50_atr * nf
+        q90_pct = q90_atr * nf
+
+        # Directional decision из chronos-band
+        if q10_pct > 0:
+            direction = "LONG"
+        elif q90_pct < 0:
+            direction = "SHORT"
+        else:
+            continue   # band straddles 0 → HOLD
+
+        # Sprint 11.3 D7c: проверка anti-signal hypothesis — инвертируем direction.
+        # Сохраняем оригинал чтобы избежать cascade-flip (LONG→SHORT→LONG).
+        orig = direction
+        if invert in ("long_only", "both") and orig == "LONG":
+            direction = "SHORT"
+        elif invert in ("short_only", "both") and orig == "SHORT":
+            direction = "LONG"
+
+        n_signals += 1
+        position_size = max_position_pct   # fixed размер (Chronos calibrated, без sizing)
+
+        rh = float(real_H_last[t])
+        rl = float(real_L_last[t])
+        rc = float(real_C_last[t])
+
+        if direction == "LONG":
+            n_filled += 1
+            entry_delta = 0.0   # market
+            if close_only:
+                gross_pnl = rc; exit_type = "close_long"
+            else:
+                tp_price = q50_pct                       # > 0
+                sl_price = -abs(q50_pct) / rr_ratio      # ВСЕГДА отрицательный (под entry)
+                tp_hit = rh >= tp_price
+                sl_hit = rl <= sl_price
+                if sl_hit and tp_hit:
+                    ds = abs(sl_price); dt = abs(tp_price)
+                    rng = np.random.RandomState(t + 7_000_000)
+                    p_tp = ds / (ds + dt + 1e-9)
+                    if rng.random() < p_tp:
+                        gross_pnl = tp_price; exit_type = "TP_bm"
+                    else:
+                        gross_pnl = sl_price; exit_type = "SL_bm"
+                elif tp_hit:
+                    gross_pnl = tp_price; exit_type = "TP"
+                elif sl_hit:
+                    gross_pnl = sl_price; exit_type = "SL"
+                else:
+                    gross_pnl = rc; exit_type = "close"
+        else:   # SHORT
+            n_filled += 1
+            entry_delta = 0.0
+            if close_only:
+                gross_pnl = -rc; exit_type = "close_short"
+            else:
+                tp_price = q50_pct                       # < 0 (т.к. q90 < 0 → q50 < 0)
+                sl_price = abs(q50_pct) / rr_ratio       # ВСЕГДА положительный (над entry)
+                tp_hit = rl <= tp_price                   # цена пошла вниз достаточно
+                sl_hit = rh >= sl_price                   # цена пошла ВВЕРХ выше SL → стоп
+                if sl_hit and tp_hit:
+                    ds = abs(sl_price); dt = abs(tp_price)
+                    rng = np.random.RandomState(t + 8_000_000)
+                    p_tp = ds / (ds + dt + 1e-9)
+                    if rng.random() < p_tp:
+                        gross_pnl = -tp_price; exit_type = "TP_bm"
+                    else:
+                        gross_pnl = -sl_price; exit_type = "SL_bm"
+                elif tp_hit:
+                    gross_pnl = -tp_price; exit_type = "TP"
+                elif sl_hit:
+                    gross_pnl = -sl_price; exit_type = "SL"
+                else:
+                    gross_pnl = -rc; exit_type = "close"
+
+        net_pnl_pct = gross_pnl - 2 * fee
+        pnl_capital = net_pnl_pct * position_size
+        if abs(pnl_capital) > 0.05:
+            continue
+        trades.append({
+            't': int(t),
+            'direction': direction,
+            'signal': float(q50_atr),    # для контекста — chronos median
+            'size': float(position_size),
+            'entry_delta': float(entry_delta),
+            'gross_pnl': float(gross_pnl),
+            'net_pnl_pct': float(net_pnl_pct),
+            'pnl_capital': float(pnl_capital),
+            'exit': exit_type, 'true_cls': int(y_true[t]),
+        })
+
+    diag = {
+        'long_fill_rate':  1.0 if n_signals else 0.0,
+        'short_fill_rate': 1.0 if n_signals else 0.0,
+        'n_signals_long':  sum(1 for tr in trades if tr['direction'] == 'LONG'),
+        'n_signals_short': sum(1 for tr in trades if tr['direction'] == 'SHORT'),
+    }
+    return trades, diag
+
+
+# ────────────────────────────────────────────────────────────
 # Sprint 2: симуляция на основе DecisionLayer
 # ────────────────────────────────────────────────────────────
 
@@ -780,6 +1097,90 @@ def main():
             trades, label=f'{name} [{mode}]',
             trading_days=trading_days, total_samples=total_samples, diag=diag)
         all_trades[name] = trades
+
+    # Sprint 11.2 D5 — quantile-driven execution (если quantile_pred в npz)
+    if 'quantile_pred' in data.files:
+        qp = data['quantile_pred']
+        # Ожидаем shape [N, 4 * 3 * fb]; для текущего fb=5 это [N, 60].
+        if qp.shape[1] == 4 * 3 * args.future_bars:
+            print(f'\n{"═"*70}\n  D5 quantile variants (Sprint 11.2 — Q-9 unlocked)\n{"═"*70}')
+            print(f'  quantile_pred shape={qp.shape}, future_bars={args.future_bars}')
+            # D5a (default): L_q10 entry — самый жёсткий, fill ~6%
+            # D5b: L_q50 entry — median, fill выше, win-rate ниже
+            # D5c: D5a + sl_buf_mult=2.0 — шире SL, реже выбиваемся
+            d5_variants = [
+                ('D5a_q10',     dict(entry_q_idx=0, exit_q_idx=2, sl_buf_mult=1.5),
+                                'L_q10 entry, H_q90 TP, SL×1.5'),
+                ('D5b_q50',     dict(entry_q_idx=1, exit_q_idx=2, sl_buf_mult=1.5),
+                                'L_q50 entry (median), H_q90 TP, SL×1.5'),
+                ('D5c_wide_sl', dict(entry_q_idx=0, exit_q_idx=2, sl_buf_mult=2.0),
+                                'L_q10 entry, H_q90 TP, SL×2.0 (шире)'),
+            ]
+            for name, kw, descr in d5_variants:
+                trades, diag = simulate_quantile_strategy(
+                    p_dir, cls_probs, qp, ohlc_true_pct, atr_ratio, y_true,
+                    signal_threshold=0.25,
+                    future_bars=args.future_bars,
+                    **kw,
+                )
+                stats[name] = analyze_trades(
+                    trades, label=f'{name} [{descr}]',
+                    trading_days=trading_days, total_samples=total_samples, diag=diag)
+                all_trades[name] = trades
+        else:
+            print(f'\n  ⚠️  D5 skip: quantile_pred shape {qp.shape} != ожидаемое '
+                  f'[N, {4*3*args.future_bars}]')
+
+    # Sprint 11.3 D7 — Chronos quantile-band directional execution
+    if all(k in data.files for k in ('chronos_close_q10', 'chronos_close_q50',
+                                       'chronos_close_q90', 'has_chronos')):
+        print(f'\n{"═"*70}\n  D7_chronos (Sprint 11.3 — foundation model directional)\n{"═"*70}')
+        c_q10 = data['chronos_close_q10']
+        c_q50 = data['chronos_close_q50']
+        c_q90 = data['chronos_close_q90']
+        has_c = data['has_chronos'].astype(bool)
+        n_c = int(has_c.sum())
+        print(f'  Chronos coverage: {n_c}/{len(has_c)} ({n_c/len(has_c)*100:.1f}%)')
+
+        # D7a: TP/SL — TP=q50, SL=-q50/RR (2:1 risk-reward)
+        d7a_trades, d7a_diag = simulate_chronos_strategy(
+            c_q10, c_q50, c_q90, has_c, ohlc_true_pct, atr_ratio, y_true,
+            fb=args.future_bars, rr_ratio=2.0, close_only=False,
+        )
+        stats['D7a_chronos_tpsl'] = analyze_trades(
+            d7a_trades, label='D7a_chronos [TP=q50, SL=−q50/2 (RR 2:1)]',
+            trading_days=trading_days, total_samples=total_samples, diag=d7a_diag)
+        all_trades['D7a_chronos_tpsl'] = d7a_trades
+
+        # D7b: close-only — чистый directional test без TP/SL
+        d7b_trades, d7b_diag = simulate_chronos_strategy(
+            c_q10, c_q50, c_q90, has_c, ohlc_true_pct, atr_ratio, y_true,
+            fb=args.future_bars, close_only=True,
+        )
+        stats['D7b_chronos_close'] = analyze_trades(
+            d7b_trades, label='D7b_chronos [close-only, чистый directional]',
+            trading_days=trading_days, total_samples=total_samples, diag=d7b_diag)
+        all_trades['D7b_chronos_close'] = d7b_trades
+
+        # D7c: LONG-band инвертируется в SHORT (тест anti-signal hypothesis для LONG)
+        d7c_trades, d7c_diag = simulate_chronos_strategy(
+            c_q10, c_q50, c_q90, has_c, ohlc_true_pct, atr_ratio, y_true,
+            fb=args.future_bars, close_only=True, invert="long_only",
+        )
+        stats['D7c_chronos_invLONG'] = analyze_trades(
+            d7c_trades, label='D7c_chronos [LONG→SHORT инверсия, close-only]',
+            trading_days=trading_days, total_samples=total_samples, diag=d7c_diag)
+        all_trades['D7c_chronos_invLONG'] = d7c_trades
+
+        # D7d: полная инверсия (LONG↔SHORT) — последняя проверка
+        d7d_trades, d7d_diag = simulate_chronos_strategy(
+            c_q10, c_q50, c_q90, has_c, ohlc_true_pct, atr_ratio, y_true,
+            fb=args.future_bars, close_only=True, invert="both",
+        )
+        stats['D7d_chronos_invBOTH'] = analyze_trades(
+            d7d_trades, label='D7d_chronos [LONG↔SHORT full invert, close-only]',
+            trading_days=trading_days, total_samples=total_samples, diag=d7d_diag)
+        all_trades['D7d_chronos_invBOTH'] = d7d_trades
 
     # ── Sprint 2: decision-aware стратегия ─────────────────────────────
     if has_decision:

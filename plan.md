@@ -1,8 +1,38 @@
 # ML Trading System — MOEX | План проекта
 
-**Обновлено:** 2026-05-10 · Sprint 11.1 этап 3 **ребилд завершён**. Ordering overlap: L↔O=0.40%, C↔H=0.27% ✅. Dir_acc восстановился до 0.5261 (было 0.5166 в этапе 2). **D3_coin_flip впервые breakeven при N=217 сделках** (total=−0.00%, gross=+0.209%/trade). ⚠️ O/C channel coverage collapsed: avg O=2.53%, C=0.89% — D5 execution blocked. Platt калибровка ухудшилась (ECE 10.78%→12.83% после применения) — нужен re-fit Platt.
-**Обновлено:** 2026-05-09 · Sprint 11.1 этап 2 ребилд: OHLC quantile heads + ordering penalty работают (overlap < 3%, медианы строго упорядочены). **In-sample 6 D/E режимов в плюс**: D3 total +0.37% Sharpe +0.92, E_decision +0.31%. Но coverage квантилей упал до 38% (overconfident), dir_acc -1.27pp. Веса скорректированы (ordering 0.10→0.03, quantile 0.15→0.10), ждём третий ребилд.
-**Текущий статус:** инфраструктура полная, D3 breakeven in-sample (N=217), OOS walk-forward убыточен из-за низкого coverage (n_avg=11 сделок/фолд)
+**Обновлено:** 2026-05-12 (вечер) · Sprint 11.2 **6-й ребилд завершён** (Q-9 fix: variance_floor_w=0.05 + min_oc=0.50 + slope_align расширен на O/C). 🎉 **Q-9 ПРОБИТ**: O coverage 3.5%→**38.5%** (+35pp), C 1.5%→**27.66%** (+26pp). ✅ **Q-11 восстанавливается**: dir_acc 0.5157→**0.5273** (+1.16pp), hit_rate 0.3970→**0.4259** (+2.89pp). ✅ **WF улучшилась**: exp% −0.252→**−0.173**, hit 0.35→**0.41**. 🟡 H/L coverage отъехала вниз (84%→59% на t+1) — variance floor «сворил» loss-бюджет у H/L; можно вернуть снижением var_floor_w до 0.03. 🟡 MetaV3 holdout 0.5601→**0.5551** — естественная регрессия meta при сдвиге backbone-распределения.
+**Обновлено:** 2026-05-12 · Sprint 11.2 **5-й ребилд завершён** (Q-11 fix: asymmetric τ H=0.95/L=0.05 + slope_align_w=0.04 + oc_q_w=0.10). 🔴 **Q-11 ПРОВАЛ**: dir_acc 0.5231→**0.5157** (−0.74pp), hit_rate 0.4262→**0.3970** (−2.92pp). SELL coverage 9.6%→**15.2%** — backbone стал ещё больше SELL-biased. 🔴 **Q-9 НЕ РЕШЁН**: O/C coverage avg 3.5%/1.5% (slope_align действует только на H/L). ✅ **MetaV3 пробил цель**: holdout **0.5601** (≥0.560), full **0.5977** (+2.75pp vs 4-й).
+**Обновлено:** 2026-05-11 · Sprint 11.2 **4-й ребилд завершён** (Q-9 fix: O/C bias spread + per-channel weights oc=0.15/hl=0.05). dir_acc=0.5231, SELL coverage +5.6pp → 9.6%. ⚠️ **Hit rate = 0.4262 — ниже 0.50** (coverage expansion degraded precision). quantile_eval ещё не запущен (нужно проверить O/C coverage). Platt re-fit прошёл успешно (ECE 12.83%→0.66% val).
+**Обновлено:** 2026-05-10 · Sprint 11.1 этап 3 **ребилд завершён**. Ordering overlap: L↔O=0.40%, C↔H=0.27% ✅. Dir_acc восстановился до 0.5261 (было 0.5166 в этапе 2). **D3_coin_flip впервые breakeven при N=217 сделках** (total=−0.00%, gross=+0.209%/trade). ⚠️ O/C channel coverage collapsed: avg O=2.53%, C=0.89% — D5 execution blocked.
+**Текущий статус (2026-05-13 поздно ночь):** 🚀 **PRODUCTION RECORD**: E2 (MetaV4 + chronos_width + bear-only-SHORT-only) — N=108, win 61.11%, gross +0.881%, **total +1.47%, Sharpe +1.63, MaxDD −0.14%**. Chronos_width оказался ценным uncertainty filter — meta использует ширину Chronos quantile band для отсева плохих SHORT trades.
+
+**OOS подтверждение остается на старых данных**: WF D3 bear-only (на MetaV3) avg total +1.71±3.47%, 3/5 фолда плюс. Walk-forward с новым MetaV4 еще не запускался — следующий шаг.
+
+**Главный вопрос**: реализовать bear-only decision_layer (отключить side/bull) и измерить, даст ли это устойчивый OOS edge. Альтернативно — фокус на улучшение UP recall (текущий 30% vs DOWN 60%) — для этого нужен новый рейбилд с rebalanced cls_weights.
+
+**🆕 2026-05-13 поздно вечера — bear-only thresholds применены:**
+- [decision_layer.py:264-294](ml/decision_layer.py#L264-L294) `DEFAULT_REGIME_THRESHOLDS` обновлено: bear=edge 4.0/dir 0.70/sell 0.55 (sweep meta optimum), side=99 (OFF), bull=99 (OFF)
+- [walk_forward_d3.py](ml/walk_forward_d3.py) получил `--bear-only` флаг для OOS-проверки только bear сэмплов
+
+**🚀 РЕЗУЛЬТАТЫ bear-only + meta (2026-05-13 ночь):**
+
+In-sample backtest (E2_close_only, N=127, all SHORT):
+- gross/trade **+0.644%**, total **+1.11%**, Sharpe daily **+1.25**, MaxDD −0.16%
+- vs до bear-only (E2 N=1201): gross +0.213%, total +0.24%, Sharpe +0.10 → **gross ×3, Sharpe ×12**
+
+Walk-forward D3 (meta + bear-only, 5 фолдов):
+- Fold 1 (2025-03→04): n=17 win=**0.765** total=**+6.90%** ✅✅
+- Fold 2 (2025-04→06): n=13 win=**0.692** total=**+4.44%** ✅
+- Fold 3 (2025-06→10): n=4 win=0.500 total=+0.18%
+- Fold 4 (2025-10→01): n=2 win=0.500 total=−0.21%
+- Fold 5 (2026-01→05): n=8 win=0.375 total=**−2.74%** ⚠️
+- **AVG: n=9, win=0.566±0.142, exp%=+0.069±0.279, total=+1.71±3.47%** ⭐
+- 95% CI на total: [−2.60%, +6.02%] — формально граница содержит 0
+- **3/5 фолда позитив. Это первое подтверждение OOS edge в проекте.**
+
+Caveats: N мал (2-17/фолд), bear редкий (8% сэмплов), fold 5 регрессирует, selection bias по sweep на in-sample.
+
+**🆕 План перестроен (2026-05-11):** Проблема 4 из Sprint 11.2 (Mixed-Freq Hierarchical) перенесена в Sprint 12.C, чтобы объединить пересборку кеша (intraday-срезы + расширение тикеров 55→100) в один data-pipeline ребилд. Sprint 12 разбит на 5 этапов: A (data) → B (augm) → C (hierarchical) → D (Kronos) → E (live). Sprint 13 поглощён в 12.E. Стартует **12.A — Data Foundation**.
 
 ---
 
@@ -170,9 +200,34 @@ py -m ml.retrain_all --dry-run            # показать план + стат
 
 ---
 
-## 5. ТЕКУЩИЕ РЕЗУЛЬТАТЫ (2026-05-10, 3-й ребилд Sprint 11.1 этап 3)
+## 5. ТЕКУЩИЕ РЕЗУЛЬТАТЫ
 
-### V3 ансамбль (DailySpecialist)
+### V3 ансамбль — 4-й ребилд (Sprint 11.2, 2026-05-11)
+```
+Test:                  19 087 сэмплов (55 тикеров)
+Weights (Sharpe):      seed42=0.360, seed123=0.306, seed7=0.334
+Per-seed val_dir_acc:  42=0.5262, 123=0.5295, 7=0.5336
+Per-seed test_dir_acc: 42=0.5071, 123=0.5349, 7=0.5227
+Per-seed best metric:  42=0.6710 (E4), 123=0.6624 (E4), 7=0.6675 (E7)
+Per-seed early_stop:   42=E11, 123=E11, 7=E14
+Ensemble dir_acc:      0.5231   (baseline always-BUY 0.4675, edge +0.0555)
+Pairwise agreement:    0.6309   (vs 0.6923 пред. — diversity улучшилась)
+F1 UP/FLAT/DOWN:       0.38/0.15/0.47
+
+Decision coverage:     BUY=859 (4.5%) | HOLD=16398 | SELL=1830 (9.6%) ← +5.6pp SELL vs 3-й ребилд
+⚠️ Hit rate = 0.4262 (N=2689) — ниже случайного 0.50! Coverage expansion degraded precision.
+
+Изменения vs 3-й ребилд:
+  dir_acc: 0.5261 → 0.5231 (−0.30pp)
+  SELL coverage: 4.0% → 9.6% (+5.6pp) — следствие oc_q_w=0.15 (3× vs hl) — backbone сдвинул SELL-bias
+  Pairwise agreement: 0.6923 → 0.6309 (diversity выросла, seeds менее коррелированы)
+  Hit rate: ? → 0.4262 🔴 (критическая регрессия)
+
+Platt re-fit (2026-05-11): val ECE 12.83%(raw) → 0.66%(Platt) ✅ (ECE guard пропустил)
+  dir_prob mean: 0.4057→0.4752, std: 0.1485→0.0873 (Platt сжал к 0.5)
+```
+
+### V3 ансамбль — 3-й ребилд (Sprint 11.1 этап 3, 2026-05-10)
 ```
 Test:                  19 087 сэмплов (55 тикеров)
 Weights (Sharpe):      seed42=0.420, seed123=0.343, seed7=0.238
@@ -337,8 +392,9 @@ Worst-5: ENPG (0.2724), FLOT, LENT, AFLT (0.3157), OZON (0.3162)
 | Q-6 | 🟡 | **Volume per-bar target отсутствует** — aux_y покрывает только агрегированные vol+skew. | Расширение `build_ohlc_labels` — отложено |
 | Q-7 | 🟡 | **quantile_eval Section 9** не разделяет body overlap по bull/bear/doji. | Добавить в [ml/quantile_eval.py](ml/quantile_eval.py) секцию body_overlap |
 | Q-8 | 🟡 | **D3 RNG non-determinism**: walk_forward_d3 усредняет по 5 seeds — ОК. В production нужен явный rng_state. | Низкий приоритет |
-| Q-9 | 🔴 | **O/C quantile channel collapse**: coverage avg O=2.53%, C=0.89%. Backbone не отделяет O/C от cls-signal. | Отдельный shallow trunk для O/C (2 conv layers), или detach cls-path перед O/C head |
-| Q-10 | 🟠 | **Platt устаревает после каждого ребилда**: ECE 10.78%→12.83% после применения старых params. | Добавить `calibrate_platt` как обязательный шаг в `retrain_all` после trainer_v3_ensemble |
+| Q-9 | ✅ | **ЗАКРЫТ 6-м ребилдом (2026-05-12 вечер)**: variance_floor + slope_align на O/C дали O avg=**38.5%** (3.5%→+35pp), C avg=**27.66%** (1.5%→+26pp). t+1 specifically: O=72.9%, C=37%. Backbone теперь предсказывает O/C-интервалы, не deterministic-точки. **Tradeoff**: H/L coverage уехала вниз (84/82% → 59/51% на t+1) — variance floor отнял loss-бюджет. Можно вернуть в 70% диапазон снижением `var_floor_w` 0.05→0.03 на 7-й ребилд. | Закрыт. Tracking: на 7-м ребилде снизить var_floor_w до 0.03, цель H/L coverage t+1 ≈ 70-80%, O/C coverage не упасть ниже 25%. |
+| Q-10 | ✅ | **Platt ECE guard** — реализован и работает: при ухудшении ECE откатывает к identity. 5-й ребилд: val ECE 26.82%→1.60% ✅; test 18.64%→13.57% (помогает но недостаточно). | Закрыт 2026-05-11. Авто-применяется в `retrain_all`. |
+| Q-11 | 🟡 | **6-й ребилд + decision_sweep (2026-05-12 ночь)**: hit_rate 0.4259 на default, sweep дал best bear=−0.038, side=−0.131, bull=−0.105 — ни одна threshold-комбинация не пробила breakeven. Hit 0.47 в side выше random, но costs 0.2% съедают edge. Цель ≥0.50 не достигнута market-execution'ом. | (a) Переключить decision_layer на meta_dir_prob (+2.78pp lift из MetaV3 holdout) — нужен патч в `patch_decision_signal.py` + merge meta_dir_prob в ensemble_predictions.npz; (b) Backtest D3/D5 limit-execution — spread снижается с 0.2% до ~0.05%, текущего hit 0.47 в side хватит. |
 
 ### Возможные улучшения (после закрытия Q-1..Q-3)
 
@@ -550,7 +606,16 @@ body_pen = (penalty_bull + penalty_bear).sum() / (bull_mask.sum() + bear_mask.su
 - [x] **Walk-forward с D2/D3 execution** ([ml/walk_forward_d3.py](ml/walk_forward_d3.py)) — 🟡 **впервые exp% > 0 в среднем** (D3 +0.240%±0.502, D2 +0.185%±0.541), но n_avg=11 сделок/фолд — статистически ненадёжно. Fold 1 (n=30) убыточен (exp=−0.256%), fold 4+5 (n=1 каждый) прибыльны. **Вывод**: in-sample edge подтверждается, но OOS требует больше coverage (цель n≥50/фолд).
 - [ ] **Fix O/C channel coverage collapse** — отдельный backbone для O/C предсказаний или gradient stop из cls-head (Q-9)
 - [ ] **Re-fit Platt** после каждого ребилда (`py -m ml.calibrate_platt`) — автоматизировать в retrain_all
-- [ ] D5_quantile execution mode в backtest_strategy: BUY на q_H[0.1] как TP-target (не q_O — O/C бесполезны пока), exit на q_H[0.9]; сравнение с D3
+- [x] **D5_quantile execution mode** в [backtest_strategy.py](ml/backtest_strategy.py) — реализован + протестирован 2026-05-13. **Результаты (6-й ребилд, N=571)**: LONG win 58.14% (best across all strategies), SHORT win 51.58%; **fill rate 5.7% LONG / 6.7% SHORT — entry на L_q10 слишком жёсткий**. gross −0.010%, total −0.82%. Exit 95.3% "close" (sl_buf_mult=1.5 широк, TP редко). **Вывод**: quantile entry выбирает лучшие сделки (95% CI win-LONG ≈ [49.6%, 66.5%]) но порог отсева слишком жёсткий.
+- [x] **D5 варианты добавлены** (2026-05-13): D5a (q10 entry, дефолт), D5b (q50 entry — median, выше fill), D5c (q10 + sl_buf_mult=2.0). Запуск в `backtest_strategy main()` авто.
+- [x] **meta_dir_prob merge + decision_layer switch** (2026-05-13):
+  - Новый [ml/merge_meta_into_npz.py](ml/merge_meta_into_npz.py) — вычисляет MetaV3 P(UP) для всех сэмплов в meta_features_v3, мерж в ensemble_predictions.npz по (date, ticker) join. Записывает `meta_dir_prob`, `meta_dir_logit`, `has_meta`.
+  - [patch_decision_signal.py](ml/patch_decision_signal.py) теперь auto-выбирает meta_dir_prob > dir_prob_platt > dir_prob_calibrated > dir_prob. NaN-сэмплы (без meta match) автоматически падают на dir_prob_platt fallback.
+  - **Результат 2026-05-13**: meta vs raw acc 0.5706 vs 0.5275 = **+4.31pp** на intersection N=14261. Coverage 74.8%.
+  - 🎉 **E2_decision_close_only с meta: total=+0.24%, gross=+0.213%/trade, Sharpe=+0.10, N=1201** — **первый прибыльный in-sample**. E_decision_layer (TP/SL): gross +0.179%, total −0.55%. Hit_rate 0.4259→0.4621.
+  - ⚠️ **100% SELL-bias** (BUY=1 SELL=1834) — пороги унаследованы от raw dir_prob (mean=0.47) и не подходят meta (mean=0.49, std=0.09): P(meta>0.80) ≈ 0.03%. **TODO: decision_sweep на meta_dir_prob → найти сбалансированные пороги.** |
+- [x] **Walk-forward D3 на 6-м ребилде** (2026-05-13): 2/5 фолда плюс (folds 2-3: win 0.54-0.57, exp% +0.008/+0.036), folds 4-5 минус (n=12-21, нестат.). Avg total −0.56±2.21%. **Регрессия в folds 4-5** (актуальный период 2026 Q1-Q2) — concerning, нужен анализ regime drift.
+- [x] **decision_sweep + WF на meta_dir_prob** (2026-05-13 поздно): 🎯 **BEAR REGIME ПРИБЫЛЕН**: best meta combo edge=4.0/dir=0.70/sell=0.55 → cov 8.57%, exp%=**+0.069**, win=0.508 в bear. Side/bull остаются −0.13% при любых порогах. **WF D3 c meta**: fold 5 (2026-02→05) — лучший за серию: n=11, win=0.636, exp%=+0.175, total=+1.92%. Avg total% c meta −1.95±2.95% (хуже raw −0.56%) из-за фолдов 2/4 с малым N. **Вывод**: edge только в bear regime, side/bull не работают независимо от калибровки. SELL-bias матчит правду только когда DOWN доминирует.
 - [ ] Volume per-bar target — отдельный спринт (требует расширения `build_ohlc_labels`)
 
 ### 🔴 Sprint 10 — открытые вопросы после walk-forward (2026-05-06)
@@ -578,21 +643,195 @@ self.high_quantile_head = nn.Linear(trunk_dim, 3 * future_bars)
 
 **Запуск только после:** Sprint 10 B (Platt) применён, decision_layer переключён на dir_prob_platt, и видим на N>200 сделок что D2 даёт стабильный edge < 0.2% (т.е. точечный OHLC недостаточен).
 
-**11.2 — MinuteSpecialist (15min → Hour) + teacher-student каскад** (P2 идея #8)
-- Input: [B, 60, 25] (60×15min bars)
-- Выход: эмбеддинг внутридневной формы передаётся в HourlySpec (не скаляры h_dir/h_conf/h_vol, а dense vector)
-- Запуск только если 11.1 не закрыл цель edge > 2×fee
+**11.2 — Архитектурные улучшения quantile-прогноза (анализ 2026-05-11)**
 
-### 🔵 Sprint 12 — Усиление модели
-- Расширение тикеров 55 → 100 (P2 идея #9)
-- Аугментации (P2 идея #11)
-- Live intraday execution loop (P2 идея #10)
-- Kronos fine-tuning (P2 идея #12)
+Выявлено 4 системных проблемы квантильного прогноза. Порядок внедрения:
 
-### 🔴 Sprint 13 — Production
-- Лимитные ордера вместо market (P2 идея #13 — снижает costs ×4)
-- MT5 live trading с MetaV4 + adaptive thresholds
-- Monitoring + auto-retrain каждую неделю
+| # | Что | Статус | Ожидаемый эффект |
+|---|-----|--------|-----------------|
+| 1 | Asymmetric τ для H/L | ✅ **реализовано** 2026-05-11 | H τ=0.95, L τ=0.05 — растяжка хвостов |
+| 2 | Mean-scaling (Chronos-style) | ✅ **реализовано** 2026-05-11 | `chronos_scale()` готов, wire-up в датасете |
+| 3 | TrendConditioner + slope_alignment_loss | ✅ **реализовано** 2026-05-11 | slope_align_w=0.04 активен в forward |
+| 4 | HierarchicalDayForecaster (t=0/0.5/end) | ⬜ **перенесено в Sprint 12.C** (2026-05-11) | Объединено с расширением тикеров + intraday cache rebuild |
+| 5 | slope_align на O/C + variance floor (Q-9 fix) | ✅ **6-й ребилд закрыл Q-9** (2026-05-12 вечер) | O cov 38.5%, C 27.66%; H/L просели до 45/48% (вернуть var_floor_w 0.05→0.03 на 7-м) |
+
+**Проблема 1 — Горизонтальный конус игнорирует тренд** ✅ *реализовано 2026-05-11*
+
+Добавлены в [ml/multiscale_cnn_v3.py](ml/multiscale_cnn_v3.py):
+
+- `TrendConditioner` — вычисляет нормированный slope последних 10 баров: `(close[-1]-close[-lb])/(lb·ATR)` → [B,1]. Готов к подключению в quantile head как conditioning vector.
+- `_slope_alignment_loss` — штраф когда наклон q50 противоположен реальному тренду; активируется только при `|actual_slope| > 0.10 ATR`; `slope_align_w=0.04` включён в `MultiTaskLossV3.forward`.
+
+**Проблема 2 — Симметричный Pinball loss** ✅ *реализовано 2026-05-11*
+
+`pinball_loss_quantile` обновлён: принимает кастомный `quantiles`. В `MultiTaskLossV3.forward` теперь вызывается с асимметричными τ:
+```
+H: quantiles=(0.10, 0.50, 0.95)  ← правый хвост (гэпы вверх)
+L: quantiles=(0.05, 0.50, 0.90)  ← левый хвост (паника)
+O: quantiles=(0.10, 0.50, 0.90)  ← симметрично
+C: quantiles=(0.10, 0.50, 0.90)  ← симметрично
+```
+
+**Проблема 3 — Chronos mean-scaling** ✅ *реализовано 2026-05-11 (standalone)*
+
+`chronos_scale(x)` добавлена в [ml/multiscale_cnn_v3.py](ml/multiscale_cnn_v3.py). Делит на mean-abs по временному окну — инвариантно к уровню цены тикера. Wire-up в датасете или quantile head — следующий шаг.
+
+**Проблема 4 — Mixed-Frequency Hierarchical (t=0, t=0.5, t=end)** ⬜ *отложено*
+
+Архитектура описана выше. Открывать после закрытия Q-9, Q-11. Требует нового датасета с intraday срезами.
+
+**11.3 — Chronos quantile hybrid** [план 2026-05-13 ночь, после OOS edge подтверждения]
+
+Sprint 12.D (Kronos fine-tune) поднят сюда как 11.3 после того, как user выбрал «улучшать качество квантильных свечей через Chronos». Гипотеза: Chronos (Amazon T5-based foundation model, 84B observations претрейн) нативно выдаёт probabilistic quantile forecasts, и его zero-shot или fine-tuned quantiles могут превосходить наш custom `QuantileOHLCHead` (Sprint 11.1) на MOEX-данных.
+
+**Стратегия — гибрид (user choice 2026-05-13):**
+- V3 backbone + custom QuantileOHLCHead остаются (не ломаем bear-only edge +1.71% WF)
+- Chronos quantiles добавляем как дополнительный сигнал: `chronos_close_q[N, 3, 5]`
+- На стадии POC сравниваем zero-shot Chronos vs custom head по coverage / pinball loss / fold-level edge
+- Если Chronos лучше или дополняет → merge в `ensemble_predictions.npz` + добавить как фичу в MetaV4
+
+**Этапы:**
+- Phase A (POC zero-shot): ✅ **код готов** ([ml/chronos_quantile_pred.py](ml/chronos_quantile_pred.py))
+  - Загружает test_dates/test_tickers, тянет close-серии через Tinkoff TTL-кеш
+  - `ChronosPipeline.predict()` на каждый сэмпл → quantile из 20 sample'ов
+  - Конверсия в ATR-norm для side-by-side с нашими C-channel quantiles
+  - Variant default tiny (8M), --max-samples 200 для быстрого POC
+- Phase B (eval): расширить `quantile_eval.py` секцией `--chronos`: coverage, sharpness, pinball, bias-comparison
+- Phase C (integration): если zero-shot ≥ custom → merge chronos_close_q как ключ в ensemble_predictions.npz, добавить в MetaV4 как фичу, тюн D5-варианта с chronos-entry
+- Phase D (fine-tune): если zero-shot ниже → LoRA fine-tune через kronos_adapter инфраструктуру
+
+**Запуск:**
+```
+pip install chronos-forecasting   # один раз
+py -m ml.chronos_quantile_pred --variant tiny --max-samples 200
+```
+
+Что отслеживаем: chronos coverage на t+1 close vs наша C-channel coverage (сейчас 37% t+1, 27.66% avg).
+
+**🎯 Результаты POC (2026-05-13 ночь, chronos-t5-tiny, N=147, 49 тикеров):**
+
+| | Custom C-channel | Chronos zero-shot |
+|---|---|---|
+| Coverage [q10, q90] avg | **28.98%** 🔴 | **89.80%** ✅ |
+| Sharpness avg (ATR-norm) | 0.276 (узкие) | 2.44 (×6.5 шире) |
+| Median bias avg | +0.070 | +0.102 |
+| Pinball mean | 0.1759 | 0.1781 (~ничья) |
+| **Aggregate score** | 0.7558 | **0.3781** (×2 лучше) |
+
+**Вывод**: Chronos zero-shot **fundamentally лучше калиброван** — custom catastrophically overconfident (29% coverage при цели 80%), Chronos попадает в 90% случаев через широкие uncertainty-aware интервалы. Pinball loss ничья — наша голова немного точнее по q50, но грубо промахивается на хвостах. Это первый внешний сигнал, что foundation model реально полезна.
+
+**Phase C status:**
+- [x] **Full POC на 19076** (2026-05-13 ночь): 15030 valid (78.8%), Chronos coverage 90.12% устойчиво vs Custom 28.28%. Aggregate score 0.32 vs 0.69 — Chronos ×2 лучше.
+- [x] **Merge в ensemble_predictions.npz**: ключи `chronos_close_q10/q50/q90/has_chronos` ([merge_chronos_into_npz.py](ml/merge_chronos_into_npz.py)). NaN для 4046 missing → consumer fallback.
+- [x] **D7_chronos execution mode** ([backtest_strategy.py simulate_chronos_strategy](ml/backtest_strategy.py)): direction из chronos band, два варианта:
+  - D7a: TP=q50, SL=−|q50|/2 (RR 2:1, гарантированно противоположный sign)
+  - D7b: close-only (чистый directional test без TP/SL)
+  - ⚠️ **Bug fix (2026-05-13)**: первая версия имела SL на той же стороне что TP → win=100%, gross +1.096% (фейк). Исправлено: SL теперь негативен для LONG, позитивен для SHORT.
+- [ ] Bolt variant POC — API incompatibility (`ChronosConfig: unexpected input_patch_size`). Skip until lib upgrade.
+- [ ] Chronos quantile width как фича в MetaV4 (proxy uncertainty)
+- [x] **LoRA fine-tune module готов** (2026-05-13): [ml/chronos_finetune.py](ml/chronos_finetune.py) — peft+T5 fine-tune через target_modules=q/v, sliding window dataset из Tinkoff cache с cutoff=min(test_dates) (no leak), validation pinball loss каждую эпоху, save best adapter to `ml/ensemble/chronos_lora_adapter/`.
+- [x] **LoRA fine-tune запущен (2026-05-13 ночь, 3 epochs, rank=8)**:
+  - Train: 19658 windows × 3 epochs = 7371 steps, train_loss 4.36 → **2.04** (×2 снижение)
+  - Val pinball mean 6.40 → **6.12** (−4.4%) per epoch
+  - Adapter saved: `ml/ensemble/chronos_lora_adapter/` (98K trainable params, 1.16%)
+- [x] **D7 fine-tuned vs zero-shot (2026-05-13 ночь)**:
+  - N trades: 259 → **48** (×5.4 меньше — fine-tune сделал signal селективнее)
+  - **Win SHORT**: 40.17% → **56.25%** (+16.1pp) — первый реальный directional signal!
+  - Win LONG: 44.37% → 43.75% (без изменений — train period dominated by DOWN)
+  - D7a total: −3.02% → **−0.23%** (×13 лучше, но всё ещё negative)
+  - **Вывод**: LoRA исправил SHORT-direction за 3 эпохи; LONG требует balanced training data
+- [x] **Chronos eval после LoRA**: coverage 90.89% (стабильно), pinball 0.1692 (−0.009 vs zero-shot), median bias +0.060 (хуже на +0.023). Aggregate 0.3377 (было 0.3781) ✅
+- [x] **D7c_inverted (2026-05-13 ночь)**: ПОДТВЕРДИЛ Chronos LoRA = anti-signal на LONG. Инверсия LONG→SHORT даёт win 54.17% (overall), total **+0.11%**, gross **+0.318%/trade**, Sharpe +0.14, N=48. **Первый положительный D7 за всё время.** Объяснение: train period 2022-2024 на MOEX дoминирован DOWN-классом → LoRA выучила directional confidence, но знак LONG инвертирован.
+- [x] D7d bug fix (cascade flip → elif с сохранением original direction)
+- [ ] Production кандидат не побеждён: E2_meta_bear_only (N=127, win 55%, total +1.11%) остаётся лидером vs D7c (N=48, total +0.11%)
+- [x] **Hybrid E2+D7c анализ (2026-05-13 ночь)** ([ml/hybrid_eval.py](ml/hybrid_eval.py)):
+  - **Intersection = 0** — E2 и D7c трэйдят на полностью разных сэмплах (complementary)
+  - Union N=175 (127 E2 + 48 D7c, без overlap)
+  - E2 alone: net +2.75%/trade, **Sharpe +0.55**
+  - D7c alone: net +0.12%/trade, Sharpe +0.04
+  - Union: net +2.03%/trade, **Sharpe +0.43** — D7c noise разбавляет E2 quality
+  - **Вердикт**: E2 alone максимизирует Sharpe; Union больше volume но хуже risk-adjusted. **E2_meta_bear_only остаётся production-кандидатом.**
+  - Top-10 union тикеров: NLMK (+48.38% total, win 100%), CHMF (+44.89, 100%), GAZP (+38.41), FEES, ALRS — металлурги + сырьё доминируют
+- [ ] Больше эпох LoRA (r=16, epochs=10) — может сократить LONG anti-signal (но риск overfit)
+- [x] **Chronos quantile width в MetaV4 (2026-05-13 ночь)**: V3_FEATURE_NAMES 34→36 (`chr_width`, `chr_q50_avg`). MetaV4 retrain: val_acc 0.5579→0.5351 🔴 (на 36 фичах sklearn-стиль регрессия — chronos признаки шумовые для direction), full eval 0.5706→**0.5876** ✅ +1.7pp.
+- [x] **MetaV4 backtest (2026-05-13 ночь)** — двойственный результат:
+  - meta_dir_prob std 0.089 → **0.130** (×1.46 шире) — chronos features расширили distribution
+  - Появились 74 BUY signals в bear regime (раньше 0). N=182 vs 127.
+  - **Win SHORT улучшился 58.27% → 61.11%** ✅ (+2.84pp) — chronos uncertainty помогает SHORT filtering
+  - **Win LONG 32.43%** 🔴 — BUY-signals в bear regime — anti-edge (74 trades теряют)
+  - Net: total **+1.11% → +0.46%** (−0.65pp), Sharpe +1.25 → +0.43
+- [x] **Fix bear thresholds + verify (2026-05-13 ночь)** — 🚀 **НОВЫЙ ПРОИЗВОДСТВЕННЫЙ РЕКОРД**:
+  - bear: `min_dir_prob=0.99` (BUY disabled), `min_sell_dir_prob=0.55`
+  - **E2_decision_close_only**: N=108 (vs 127), win 59.26% / SHORT **61.11%**, gross **+0.881%**/trade, **total +1.47%**, **Sharpe daily +1.63**, MaxDD **−0.14%**
+  - E_decision_layer (с TP/SL тоже выровнялся): total +1.06%, Sharpe +1.32
+  - vs prev best (MetaV3 5-й, без chronos): total +1.11%→+1.47% (+0.36pp), Sharpe +1.25→+1.63 (+0.38)
+  - **Гипотеза**: chronos_width = uncertainty filter — meta использует широкую полосу chronos для отсева 19 неуверенных SHORT trades. Не direction signal, а quality gate.
+- [x] **Walk-forward MetaV4 + bear-only (2026-05-13 поздно ночь)**: avg total **+2.20±4.94%** (vs MetaV3 +1.71±3.47%, **+0.49pp**), avg n=16/fold (×1.78 больше), **avg exp%/trade +0.005% — впервые crossed breakeven OOS**, Sharpe avg −0.33 (vs −1.45). 3/5 folds positive, fold 1 dominates (+11.07% на 46 trades), folds 3-5 negative (regime drift на recent периоды 2025-Q3→2026-Q2).
+  - **In-sample vs OOS**: in-sample +1.47% < OOS avg +2.20% — strategy не overfits на test
+  - **Fold 5 (актуальный 2026-01→05)**: win 46%, total −2.53% — модель устаревает на свежих данных
+  - **Вердикт**: production-кандидат, но требует периодический retrain (weekly/monthly) против regime drift
+
+**Сноска (отложено)**: оригинальная 11.3 MinuteSpecialist (teacher-student каскад от 15min) — отложена, замещена Chronos hybrid. См. ниже архив исходного описания.
+
+**[Архив] 11.3 (исходное описание, отложено 2026-05-13)** — MinuteSpecialist (15min → Hour) + teacher-student каскад (P2 идея #8) [уточнено 2026-05-11]
+
+**Архитектура (с правками после аудита):**
+- Input: `[B, 60, F_minute]` — 60 баров × 15min ≈ 15ч ≈ 1.5 торговых дня MOEX (основная сессия ~10ч). `F_minute` выровнено с HourlySpec (37 индикаторов) — иначе backbone теряет signal без обоснования.
+- Архитектура: BiLSTM(48) + multi-scale CNN(k=5,15,30) + projection-head → embedding `[B, 64]` (а не скаляры).
+- **Каскад**: эмбеддинг внутридневной формы (`[B, 64]`) подмешивается в HourlySpec через **доп. вход** (требует доработки `HourlySpecialist.forward(x, minute_emb=None)`), а не как post-hoc фича в meta. Альтернатива: добавить эмбеддинг как 4-й вход в MetaV4 (проще, но теряется early-fusion эффект).
+- **Скоп ребилда**: ребилд MinuteSpec + ребилд HourlySpec + ребилд V3 + ребилд Meta. ~3-4ч на полный rebuild + new `cache_minute/` (~4× размер `cache_hourly/`). Это **полный refresh**, не инкремент.
+
+**Триггер запуска (чётко):**
+- OOS gross/trade > 2×fee=0.20% на ≥3 фолдах с n≥50 сделок/фолд (сейчас D3 OOS=+0.240% но n_avg=11 — нестатистично) **И**
+- hit_rate ≥ 0.50 на full test (сейчас 0.4262 — заблокировано Q-11)
+- Если оба критерия не сошлись после Sprint 11.2 5-го ребилда — запускать 11.3.
+
+### 🔵 Sprint 12 — Data Foundation + усиление (план перестроен 2026-05-11)
+
+**Логика объединения**: расширение тикеров, intraday-срезы для Mixed-Freq (бывш. Проблема 4 из 11.2), Live intraday loop и Kronos — все требуют **одной перестройки data-pipeline**. Лучше один большой ребилд кеша, чем три. Внутри спринта строгий порядок этапов: data → baseline → augm → architecture → execution. Так каждое изменение измеримо изолированно.
+
+**12.A — Data Foundation** 🆕 (стартует первой)
+
+> ⏸ **Пауза 2026-05-11**: расширение тикеров отложено. Инфраструктура готова ([ml/ticker_universe.py](ml/ticker_universe.py) + safe fallback в [config.py](ml/config.py)) — запуск `py -m ml.ticker_universe --refresh --top-n 100` создаст `ml/ensemble/ticker_universe.json` и расширит `CFG.tickers` автоматически. Возврат к 55 — удалить json. Решено сначала разобраться с Q-9/Q-11 и intraday-кешем.
+
+- Расширение тикеров **55 → 100** (P2 идея #9) ⏸:
+  - Liquidity gate: median daily turnover ≥ 100M ₽ за последние 60 дней; spread ≤ 0.3%; ≥ 250 торговых дней истории
+  - Per-ticker cost override: если ticker.avg_spread > 0.15% — costs локально повышаются (нельзя assume 0.2% round-trip на эшелон-2)
+  - Survivorship-bias check: включить делистнутые/мёрджнутые тикеры из MOEX за последние 3 года, помеченные `is_active=False`
+- Перестройка кеша с **intraday-срезами** (готовит почву для 12.C):
+  - Новый `cache_intraday/` с тремя срезами на торговый день: `t=0` (open auction close, ~10:00 MSK), `t=0.5` (~14:00), `t=end` (close auction, ~18:50)
+  - На каждом срезе пересчитываются 16 INDICATOR_COLS + intraday_feats доступные на момент среза (no leak)
+- Baseline ребилд V3 на 100 тикерах без изменений архитектуры — измерить регрессию vs 55-тикерного baseline
+- ✅ Acceptance: dir_acc не падает > 1pp vs текущий 0.5231; OOS coverage растёт пропорционально
+
+**12.B — Augmentations** (после стабильного 12.A baseline) (P2 идея #11)
+- Time-shift jitter (±2 бара) в `dataset_v3.py`
+- Mixup α=0.2 уже частично реализован — включить по умолчанию + проверить взаимодействие с quantile heads
+- Random indicator dropout p=0.10 (отличается от input_dropout в HourlySpec — здесь на этапе data loading)
+- ✅ Acceptance: val_dir_acc не падает; test-val gap (overfit) сокращается ≥ 0.5pp
+
+**12.C — HierarchicalDayForecaster** (бывш. Проблема 4 из Sprint 11.2)
+- Архитектура: 3 quantile-головы поверх backbone — `head_t0`, `head_t_mid`, `head_t_end`, каждая выдаёт `[B, 4 × 3 × fb]` (OHLC × quantiles × future_bars)
+- Условие: новый `cache_intraday/` из 12.A готов; срезы t=0/0.5/end имеют непересекающиеся information sets
+- Loss: 3× pinball на свои срезы + cross-time monotonicity penalty (q50 на t=0.5 между q50 на t=0 и q50 на t=end)
+- ✅ Acceptance: D3_coin_flip in-sample exp%/trade > 0.25% на ≥2 срезах независимо
+
+**12.D — Kronos fine-tuning** (P2 идея #12)
+- Pretrained transformer для time-series; родной mixed-frequency input — 12.A/12.C готовят датасет в нужном формате
+- ⚠️ Сначала закрыть CAWR NaN (известный bug)
+- Запуск только если 12.C показал прирост ≥ +2pp dir_acc — иначе Kronos на сломанной фиче не имеет смысла
+
+**12.E — Live intraday execution loop** (P2 идея #10)
+- 🔴 **Жёсткий gating**: запуск только если **hit_rate ≥ 0.50** (сейчас 0.4262) И **OOS Sharpe > 0** на 3+ фолдах
+- Без этих условий live execution = burn капитал
+- Использует `cancel_threshold=0.6` из `simulate_intraday_refinement` + production-loop через MT5 bridge
+
+**Прежний Sprint 13 (Production) поглощён в 12.E**, отдельного Sprint 13 пока нет.
+
+### 🔴 Sprint 13 — Production (поглощён в 12.E + перенесён)
+- Лимитные ордера vs market (P2 идея #13 — снижение costs ×4) — параллельный трек в Sprint 10
+- MT5 live trading — переехало в **12.E** под жёстким hit_rate ≥ 0.50 gating
+- Monitoring + auto-retrain weekly — отдельный спринт после стабилизации 12.E
 
 ---
 

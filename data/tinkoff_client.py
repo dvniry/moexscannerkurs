@@ -312,7 +312,17 @@ class TinkoffDataClient:
                     table = json.load(fh)
                 self._asset_uid_cache.update(table.get("asset_uid", {}))
                 self._sector_cache = dict(table.get("sector", {}))
-                return
+                # figi/uid могут отсутствовать в старом cache — будут пусто, это OK
+                for t, figi in (table.get("figi") or {}).items():
+                    if figi:
+                        self._figi_cache.setdefault(t, figi)
+                for t, uid in (table.get("uid") or {}).items():
+                    if uid:
+                        self._uid_cache.setdefault(t, uid)
+                # Если в cache были figi — возвращаемся; иначе перезаливаем из API,
+                # чтобы заполнить новые поля (миграция со старого cache-формата).
+                if table.get("figi"):
+                    return
             except Exception:
                 pass
 
@@ -366,6 +376,8 @@ class TinkoffDataClient:
                 json.dump({
                     "asset_uid": dict(self._asset_uid_cache),
                     "sector":    sector_map,
+                    "figi":      dict(self._figi_cache),
+                    "uid":       dict(self._uid_cache),
                 }, fh, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.warning("Не удалось записать кэш shares_table: %s", e)

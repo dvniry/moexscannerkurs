@@ -266,10 +266,11 @@ def main():
                         help="Поиск оптимума по expectancy")
     parser.add_argument("--by-regime", action="store_true",
                         help="Sprint 5: per-regime sweep (bear/side/bull)")
-    parser.add_argument("--source", choices=["raw", "calibrated", "platt", "auto"],
+    parser.add_argument("--source", choices=["raw", "calibrated", "platt", "meta", "auto"],
                         default="auto",
-                        help="Sprint 10 B: какие dir_prob использовать. "
-                             "auto: platt > calibrated > raw")
+                        help="Sprint 10 B / Sprint 11.2: какие dir_prob использовать. "
+                             "auto: meta > platt > calibrated > raw. "
+                             "meta = meta_dir_prob от MetaLearner v3 (нужен merge_meta_into_npz).")
     args = parser.parse_args()
 
     if not os.path.exists(args.predictions):
@@ -286,16 +287,22 @@ def main():
         print(f"ERROR: в npz отсутствуют ключи: {missing}")
         return 2
 
-    # Sprint 10 B: выбор источника dir_prob (raw/temperature/platt)
+    # Sprint 10 B / 11.2: выбор источника dir_prob (meta > platt > calibrated > raw)
     has_calib = "dir_prob_calibrated" in npz.files
     has_platt = "dir_prob_platt"      in npz.files
+    has_meta  = "meta_dir_prob"       in npz.files
     if args.source == "auto":
-        if has_platt:
+        if has_meta:
+            src_key = "meta_dir_prob"
+        elif has_platt:
             src_key = "dir_prob_platt"
         elif has_calib:
             src_key = "dir_prob_calibrated"
         else:
             src_key = "dir_prob"
+    elif args.source == "meta":
+        src_key = "meta_dir_prob" if has_meta else "dir_prob"
+        if not has_meta: print("  [WARN] meta_dir_prob отсутствует → fallback raw")
     elif args.source == "platt":
         src_key = "dir_prob_platt" if has_platt else "dir_prob"
         if not has_platt: print("  [WARN] dir_prob_platt отсутствует → fallback raw")
@@ -306,8 +313,21 @@ def main():
         src_key = "dir_prob"
     print(f"  Источник dir_prob: {src_key}")
 
+    # Sprint 11.2: meta_dir_prob имеет NaN там, где нет (date,ticker) match.
+    # Fallback на dir_prob_platt → calibrated → raw для этих сэмплов.
+    src_arr = npz[src_key].astype(np.float32)
+    if src_key == "meta_dir_prob":
+        nan_mask = ~np.isfinite(src_arr)
+        n_nan = int(nan_mask.sum())
+        if n_nan > 0:
+            for fb in ("dir_prob_platt", "dir_prob_calibrated", "dir_prob"):
+                if fb in npz.files:
+                    src_arr[nan_mask] = npz[fb].astype(np.float32)[nan_mask]
+                    print(f"  Fallback {n_nan} NaN-сэмплов → {fb}")
+                    break
+
     data = dict(
-        dir_prob  = npz[src_key].astype(np.float32),
+        dir_prob  = src_arr,
         mfe_mae   = npz["mfe_mae_pred"].astype(np.float32),
         fill_prob = npz["fill_prob"].astype(np.float32),
         edge_pred = npz["edge_pred"].astype(np.float32),

@@ -256,7 +256,7 @@ def add_indicators(df: pd.DataFrame, imoex: pd.DataFrame = None) -> pd.DataFrame
 # ══════════════════════════════════════════════════════════════════
 
 def load_imoex() -> 'pd.DataFrame | None':
-    from api.routes.candles import get_client
+    from data.tinkoff_factory import get_client
 
     client = get_client()
     try:
@@ -1522,7 +1522,7 @@ def build_full_multiscale_dataset_v3(
     ticker_filter: Optional[list] = None,
     max_ticker_workers: int = 2,
 ):
-    from api.routes.candles import get_client
+    from data.tinkoff_factory import get_client
     from ml.cache_manager import (
         _load_meta, _save_meta,
         ticker_cache_valid, probe_freshness, update_meta,

@@ -6,10 +6,53 @@
   Порог = atr_k * ATR(14) / close (в долях цены).
   Заменяет фиксированные profit_thr/loss_thr в build_labels_atr().
 """
-from dataclasses import dataclass
+import json
+import os
+from dataclasses import dataclass, field
 from typing import Optional
 
 SCALES = [5, 10, 20, 30]
+
+# ── Sprint 12.A — расширение universe через ml/ensemble/ticker_universe.json ──
+_UNIVERSE_PATH = os.path.join(os.path.dirname(__file__), "ensemble", "ticker_universe.json")
+
+
+def _load_universe_tickers(default: list[str]) -> list[str]:
+    """Возвращает CFG.tickers из universe.json если файл валиден, иначе default.
+
+    Контракт: universe должен включать как минимум все core-тикеры (force_include
+    в ticker_universe). Если universe меньше или поломан — fallback на default
+    с предупреждением. Это даёт безопасный rollback: удалить json → старые 55.
+    """
+    if not os.path.exists(_UNIVERSE_PATH):
+        return list(default)
+    try:
+        with open(_UNIVERSE_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        tickers = data.get("tickers") or []
+        if not isinstance(tickers, list) or len(tickers) < len(default):
+            return list(default)
+        core_set = set(default)
+        if not core_set.issubset(set(tickers)):
+            missing = core_set - set(tickers)
+            print(f"[config] ⚠️  universe.json не содержит core-тикеров {missing} — fallback на core_55")
+            return list(default)
+        return list(tickers)
+    except Exception as exc:
+        print(f"[config] ⚠️  не удалось прочитать {_UNIVERSE_PATH}: {exc} — fallback на core_55")
+        return list(default)
+
+
+def load_cost_overrides() -> dict[str, float]:
+    """Возвращает per-ticker cost overrides из universe.json (пусто если файла нет)."""
+    if not os.path.exists(_UNIVERSE_PATH):
+        return {}
+    try:
+        with open(_UNIVERSE_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return dict(data.get("cost_overrides") or {})
+    except Exception:
+        return {}
 
 SECTOR_CONTEXT = {
     # ── Нефть и газ ─────────────────────────────────────────────
@@ -85,6 +128,7 @@ SECTOR_CONTEXT = {
 class MLConfig:
     # ── Данные ──────────────────────────────────────────────────
     tickers: list = None
+    core_tickers: list = field(default_factory=list)   # canonical 55, force_include
     interval: str = "1d"
     days_back: int = 3650
     future_bars: int = 5            # Sprint 2: было 1, поднято для MFE/MAE/edge
@@ -143,32 +187,36 @@ class MLConfig:
     val_metric_beta:  float = 0.10   # вес sharpe_proxy (торговое качество)
 
     def __post_init__(self):
+        # Core-55 — каноничный список (используется как force_include в ticker_universe).
+        # Если ml/ensemble/ticker_universe.json присутствует — расширяем до universe.tickers.
+        core_55 = [
+            # ── Банки и финансы (7) ──────────────────────────────
+            "SBER", "SBERP", "VTBR", "T", "CBOM", "BSPB", "MOEX",
+            # ── Нефть и газ (12) ──────────────────────────────────
+            "GAZP", "LKOH", "NVTK", "ROSN", "TATN", "TATNP",
+            "SIBN", "SNGS", "AFLT", "TRNFP", "BANEP", "FLOT",
+            # ── Металлы и горнодобыча (13) ────────────────────────
+            "GMKN", "MAGN", "NLMK", "CHMF", "RUAL", "ENPG",
+            "PLZL", "ALRS", "UGLD", "SELG", "MTLR", "RASP",
+            "TRMK",
+            # ── Технологии и телеком (5) ──────────────────────────
+            "YDEX", "MTSS", "RTKM", "VKCO", "HEAD",
+            # ── Ритейл и потребсектор (5) ─────────────────────────
+            "MGNT", "OZON", "PHOR", "LENT", "AFKS",
+            # ── Недвижимость (2) ──────────────────────────────────
+            "PIKK", "LSRG",
+            # ── Прочее / холдинги (2) ─────────────────────────────
+            "IRAO", "SMLT",
+            # ── Транспорт (2) ─────────────────────────────────────
+            "NMTP", "FESH",
+            # ── Энергетика (5) ────────────────────────────────────
+            "HYDR", "FEES", "MSNG", "UPRO", "OGKB",
+            # ── Химия и удобрения (2) ─────────────────────────────
+            "NKNC", "KAZT",
+        ]
+        self.core_tickers = core_55
         if self.tickers is None:
-            self.tickers = [
-                # ── Банки и финансы (7) ──────────────────────────────
-                "SBER", "SBERP", "VTBR", "T", "CBOM", "BSPB", "MOEX",
-                # ── Нефть и газ (12) ──────────────────────────────────
-                "GAZP", "LKOH", "NVTK", "ROSN", "TATN", "TATNP",
-                "SIBN", "SNGS", "AFLT", "TRNFP", "BANEP", "FLOT",
-                # ── Металлы и горнодобыча (13) ────────────────────────
-                "GMKN", "MAGN", "NLMK", "CHMF", "RUAL", "ENPG",
-                "PLZL", "ALRS", "UGLD", "SELG", "MTLR", "RASP",
-                "TRMK",
-                # ── Технологии и телеком (5) ──────────────────────────
-                "YDEX", "MTSS", "RTKM", "VKCO", "HEAD",
-                # ── Ритейл и потребсектор (5) ─────────────────────────
-                "MGNT", "OZON", "PHOR", "LENT", "AFKS",
-                # ── Недвижимость (2) ──────────────────────────────────
-                "PIKK", "LSRG",
-                # ── Прочее / холдинги (2) ─────────────────────────────
-                "IRAO", "SMLT",
-                # ── Транспорт (2) ─────────────────────────────────────
-                "NMTP", "FESH",
-                # ── Энергетика (5) ────────────────────────────────────
-                "HYDR", "FEES", "MSNG", "UPRO", "OGKB",
-                # ── Химия и удобрения (2) ─────────────────────────────
-                "NKNC", "KAZT",
-            ]
+            self.tickers = _load_universe_tickers(default=core_55)
         if self.mlp_hidden is None:
             self.mlp_hidden = [128, 64, 32]
 

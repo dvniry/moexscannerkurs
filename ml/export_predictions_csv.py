@@ -89,7 +89,7 @@ def export_predictions(
 
     # ── Загружаем реальные свечи для дат ────────────────────
     try:
-        from api.routes.candles import get_client
+        from data.tinkoff_factory import get_client
         client = get_client()
         can_load_candles = True
     except Exception:

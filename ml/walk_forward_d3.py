@@ -88,6 +88,13 @@ def main():
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seeds", type=int, default=5,
                         help="Сколько RNG seeds для D3 (усреднение non-determinism)")
+    parser.add_argument("--source", choices=["raw", "platt", "meta", "auto"],
+                        default="auto",
+                        help="Sprint 11.2: какие dir_prob использовать. "
+                             "auto: meta > platt > raw")
+    parser.add_argument("--bear-only", action="store_true",
+                        help="Sprint 11.2: фильтровать только bear regime сэмплы. "
+                             "Используй для OOS-проверки bear-only edge.")
     args = parser.parse_args()
 
     if not os.path.exists(NPZ_PATH):
@@ -97,10 +104,49 @@ def main():
     data = {k: npz[k] for k in npz.files}
     N    = len(data["dir_prob"])
 
-    # Sprint 10 B: используем dir_prob_platt (если есть) — это то что decision_layer видит
-    if "dir_prob_platt" in data:
+    # Sprint 10 B / 11.2: meta > platt > raw
+    has_meta  = "meta_dir_prob"   in data
+    has_platt = "dir_prob_platt"  in data
+    if args.source == "auto":
+        chosen = "meta" if has_meta else ("platt" if has_platt else "raw")
+    else:
+        chosen = args.source
+
+    if chosen == "meta" and has_meta:
+        src = data["meta_dir_prob"].astype(np.float32)
+        nan_mask = ~np.isfinite(src)
+        n_nan = int(nan_mask.sum())
+        if n_nan > 0:
+            if has_platt:
+                src[nan_mask] = data["dir_prob_platt"][nan_mask].astype(np.float32)
+                print(f"  [meta] fallback {n_nan} NaN → dir_prob_platt")
+            else:
+                src[nan_mask] = data["dir_prob"][nan_mask].astype(np.float32)
+                print(f"  [meta] fallback {n_nan} NaN → dir_prob (raw)")
+        data["dir_prob"] = src
+        print("  [Sprint 11.2] dir_prob ← meta_dir_prob")
+    elif chosen == "platt" and has_platt:
         data["dir_prob"] = data["dir_prob_platt"]
         print("  [B] dir_prob ← dir_prob_platt (Sprint 10 B)")
+    else:
+        print("  dir_prob ← raw")
+
+    # Sprint 11.2: bear-only filter — оставляем только сэмплы с test_regime==0
+    if args.bear_only:
+        if "test_regime" not in data:
+            print("ERROR: --bear-only требует test_regime в npz. Запусти patch_ensemble_regime.")
+            sys.exit(2)
+        bear_mask = (data["test_regime"] == 0)
+        n_bear = int(bear_mask.sum())
+        if n_bear < 100:
+            print(f"WARN: всего {n_bear} bear-сэмплов — статистика будет ненадёжной.")
+        print(f"  [bear-only] фильтр: {n_bear}/{N} сэмплов (bear regime)")
+        for k in list(data.keys()):
+            arr = data[k]
+            if (isinstance(arr, np.ndarray) and arr.ndim >= 1
+                    and arr.shape[0] == N):
+                data[k] = arr[bear_mask]
+        N = n_bear
 
     # ── Time-series split по датам ────────────────────────────────────────
     dates = data["test_dates"]

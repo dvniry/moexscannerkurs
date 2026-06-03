@@ -5,7 +5,6 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import List
 
 import pandas as pd
@@ -15,12 +14,8 @@ from litestar.exceptions import HTTPException
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from data.tinkoff_client import TinkoffDataClient
+from data.tinkoff_factory import get_client   # re-export для существующих импортов
 from config import config
-
-
-@lru_cache(maxsize=1)
-def get_client() -> TinkoffDataClient:
-    return TinkoffDataClient(token=config.tinkoff.token)
 
 
 def _fetch_candles(ticker: str, interval: str, days: int) -> tuple[str, pd.DataFrame]:

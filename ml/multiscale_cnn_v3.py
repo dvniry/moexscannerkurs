@@ -853,12 +853,28 @@ def split_ohlc_quantiles(pred: torch.Tensor, future_bars: int = 5,
     return {"O": O, "H": H, "L": L, "C": C}
 
 
+def chronos_scale(x: torch.Tensor, eps: float = 1e-8):
+    """Mean-absolute scaling (Chronos-style): инвариантно к ценовому уровню тикера.
+
+    Делит на среднее абсолютное значение по временному окну, в отличие от
+    стандартной (x-μ)/σ нормировки. Полезно при смешении тикеров с разными
+    ценовыми диапазонами (SBER ~300₽ vs PLZL ~1300₽) в одном батче.
+    Используй для нормировки входных фичей перед передачей в quantile-голову.
+
+    Returns: (scaled, scale) — scale нужен для денормировки предсказаний.
+    """
+    scale = x.abs().mean(dim=-1, keepdim=True).clamp(min=eps)
+    return x / scale, scale
+
+
 def pinball_loss_quantile(pred: torch.Tensor, target: torch.Tensor,
                           quantiles=(0.10, 0.50, 0.90)) -> torch.Tensor:
     """Pinball loss: pred [B, len(q) * fb], target [B, fb].
 
     Узкие интервалы при попадании = низкий loss, широкие = средний loss
     всегда, узкие при промахе = большой штраф (хвостовая регрессия).
+    quantiles может быть асимметричным: (0.05, 0.50, 0.90) для L-канала
+    или (0.10, 0.50, 0.95) для H-канала.
     """
     B, total = pred.shape
     n_q  = len(quantiles)
@@ -868,6 +884,65 @@ def pinball_loss_quantile(pred: torch.Tensor, target: torch.Tensor,
     err = target_r.float() - pred_r.float()
     q   = torch.tensor(quantiles, device=pred.device, dtype=pred.dtype).view(1, n_q, 1)
     return torch.where(err >= 0, q * err, (q - 1.) * err).mean()
+
+
+def _slope_alignment_loss(pred_q50: torch.Tensor, target: torch.Tensor,
+                           threshold: float = 0.10) -> torch.Tensor:
+    """Штраф когда наклон предсказанного q50 противоположен реальному тренду.
+
+    Активируется только при сильном тренде (|actual_slope| > threshold ATR-norm).
+    Цель: убрать "горизонтальный конус" — q50 должен следовать за трендом.
+
+    pred_q50: [B, fb] — предсказанный медианный квантиль (t+1..t+fb)
+    target:   [B, fb] — реальные значения (ATR-normalized)
+    threshold: минимальный slope для активации штрафа (~5-10% ATR за fb баров)
+    """
+    if pred_q50.shape[1] < 2:
+        return torch.tensor(0., device=pred_q50.device)
+    s_pred = pred_q50[:, -1] - pred_q50[:, 0]   # slope предсказанного q50
+    s_true = target[:, -1]   - target[:, 0]      # slope реального пути
+    strong_trend = s_true.abs() > threshold       # [B] bool
+    # Штраф когда s_pred имеет знак, противоположный s_true
+    penalty = F.relu(-(s_pred * s_true.sign()))   # > 0 только при расхождении
+    return (penalty * strong_trend.float()).mean()
+
+
+def _variance_floor_loss(pred: torch.Tensor, min_spread: float) -> torch.Tensor:
+    """Штраф за коллапс quantile-интервала (q90 − q10 ниже min_spread).
+
+    Цель — лечить O/C channel collapse: модель учит O/C как deterministic
+    (q10≈q50≈q90), потому что O[t+1]≈C[t] структурно. Variance floor
+    заставляет интервал быть не уже min_spread (в ATR-normalized units).
+
+    pred: [B, 3*fb] — layout [q10 × fb | q50 × fb | q90 × fb]
+    min_spread: минимальная допустимая ширина (q90 − q10), ATR-norm
+    """
+    fb = pred.shape[1] // 3
+    q10 = pred[:, :fb]
+    q90 = pred[:, 2*fb:3*fb]
+    spread = q90 - q10                       # [B, fb], должно быть > 0 (monotone)
+    return F.relu(min_spread - spread).mean()
+
+
+class TrendConditioner(nn.Module):
+    """Нормированный slope последних lb баров → conditioning vector [B, 1].
+
+    Используется как gate для TrendGatedQuantileHead: slope > 0 (восходящий
+    тренд) → upper_spread увеличивается, lower_spread уменьшается.
+    Вход close: [B, T] — raw или ATR-normalized close prices последнего окна.
+    """
+
+    def __init__(self, lookback: int = 10, atr_eps: float = 1e-6):
+        super().__init__()
+        self.lb  = lookback
+        self.eps = atr_eps
+
+    def forward(self, close: torch.Tensor) -> torch.Tensor:
+        lb = min(self.lb, close.shape[1])
+        slope = (close[:, -1] - close[:, -lb]) / (lb + self.eps)
+        atr   = (close[:, -lb:].max(-1).values
+                 - close[:, -lb:].min(-1).values).clamp(min=self.eps)
+        return (slope / atr).unsqueeze(-1)   # [B, 1], ∈ [-3, +3]
 
 
 def ordering_penalty_ohlc(quant_pred: torch.Tensor, future_bars: int = 5,
@@ -937,12 +1012,12 @@ class MultiTaskLossV3(nn.Module):
                  reg_loss_weight=0.20,     # v3.19: было 0.30
                  aux_loss_weight=0.10,     # v3.19: было 0.05
                  hl_quantile_loss_weight=0.05,  # Sprint 11.2 — pinball для H и L каналов
-                                                # (H/L coverage 79%/76% при 0.025 эфф. ранее)
-                 oc_quantile_loss_weight=0.15,  # Sprint 11.2 — pinball для O и C каналов (3×)
-                                                # O/C collapse: coverage 2.5%/0.9% при равных
-                                                # весах → нужен 3× gradient. Сумма 0.05+0.15=0.20
-                                                # × 2 каналов каждый = 0.40 total (как было 4×0.10)
-                 ordering_loss_weight=0.03,    # Sprint 11.1 — штраф за overlap L<O,C<H
+                 oc_quantile_loss_weight=0.10,  # Sprint 11.2 — pinball для O и C каналов
+                 ordering_loss_weight=0.06,     # Sprint 11.1 — штраф за overlap L<O,C<H
+                 slope_align_weight=0.04,        # Sprint 11.2 — штраф горизонтального конуса
+                 # Sprint 11.2 — variance floor для O/C: лечит collapse coverage 3%/1%
+                 variance_floor_weight=0.05,
+                 variance_floor_min_oc=0.50,
                  dir_mask_threshold=1e-4):
         super().__init__()
         self.focal = AsymmetricFocalLoss(
@@ -957,6 +1032,9 @@ class MultiTaskLossV3(nn.Module):
         self.hl_q_w          = hl_quantile_loss_weight
         self.oc_q_w          = oc_quantile_loss_weight
         self.ordering_w      = ordering_loss_weight
+        self.slope_align_w   = slope_align_weight
+        self.var_floor_w     = variance_floor_weight
+        self.var_floor_min_oc = variance_floor_min_oc
         self.future_bars     = future_bars
         self.dir_mask_threshold = dir_mask_threshold
 
@@ -1005,17 +1083,44 @@ class MultiTaskLossV3(nn.Module):
             pred_L = quantile_pred[:, 2*chunk:3*chunk]
             pred_C = quantile_pred[:, 3*chunk:4*chunk]
             if self.hl_q_w > 0 or self.oc_q_w > 0:
-                # Sprint 11.2: O/C получают 3× вес vs H/L — лечит O/C coverage collapse.
-                # Сумма весов идентична старому 4×0.10: 2×0.15 + 2×0.05 = 0.40
-                q_loss = (self.oc_q_w * pinball_loss_quantile(pred_O, target_O)
-                          + self.hl_q_w * pinball_loss_quantile(pred_H, target_H)
-                          + self.hl_q_w * pinball_loss_quantile(pred_L, target_L)
-                          + self.oc_q_w * pinball_loss_quantile(pred_C, target_C))
+                # Sprint 11.2: asymmetric τ — H правый хвост (гэпы вверх) τ=0.95,
+                # L левый хвост (паника) τ=0.05. O/C симметричны.
+                q_loss = (self.oc_q_w * pinball_loss_quantile(pred_O, target_O,
+                                                               quantiles=(0.10, 0.50, 0.90))
+                          + self.hl_q_w * pinball_loss_quantile(pred_H, target_H,
+                                                                 quantiles=(0.10, 0.50, 0.95))
+                          + self.hl_q_w * pinball_loss_quantile(pred_L, target_L,
+                                                                 quantiles=(0.05, 0.50, 0.90))
+                          + self.oc_q_w * pinball_loss_quantile(pred_C, target_C,
+                                                                 quantiles=(0.10, 0.50, 0.90)))
             if self.ordering_w > 0:
                 ord_loss = ordering_penalty_ohlc(
                     quantile_pred, future_bars=fb_true,
                     target_O=target_O, target_C=target_C,
                 )
+            if self.slope_align_w > 0:
+                # q50 = средний квантиль (index 1), layout: [q10 × fb | q50 × fb | q90 × fb]
+                fb = chunk // 3
+                q50_O = pred_O[:, fb:2*fb]
+                q50_H = pred_H[:, fb:2*fb]
+                q50_L = pred_L[:, fb:2*fb]
+                q50_C = pred_C[:, fb:2*fb]
+                # Sprint 11.2 (2026-05-12): расширено на O/C — лечит O/C collapse
+                # (5-й ребилд показал O coverage=3.5%, C=1.5% — slope_align только
+                # на H/L не давал градиента O/C-каналам).
+                slope_loss = (_slope_alignment_loss(q50_O, target_O)
+                              + _slope_alignment_loss(q50_H, target_H)
+                              + _slope_alignment_loss(q50_L, target_L)
+                              + _slope_alignment_loss(q50_C, target_C)) / 4.0
+                q_loss = q_loss + self.slope_align_w * slope_loss
+
+            if self.var_floor_w > 0 and self.var_floor_min_oc > 0:
+                # Sprint 11.2 (2026-05-12): variance floor только на O/C — H/L coverage
+                # уже OK (~60-80%). O[t+1]≈C[t] делает O/C почти deterministic →
+                # модель схлопывает интервал. Floor заставляет (q90-q10) ≥ min.
+                vf_loss = (_variance_floor_loss(pred_O, self.var_floor_min_oc)
+                           + _variance_floor_loss(pred_C, self.var_floor_min_oc)) / 2.0
+                q_loss = q_loss + self.var_floor_w * vf_loss
 
         total = (cls_loss
                  + self.reg_loss_weight * reg_loss
