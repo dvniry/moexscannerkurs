@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "generated_at": "2026-05-11T11:28:44Z",
+  "criteria": {
+    "min_turnover_rub": 100000000.0,
+    "max_range_pct": 0.05,
+    "min_days": 250,
+    "top_n": 100
+  },
+  "tickers": [],
+  "cost_overrides": {},
+  "force_overrides": [],
+  "dropped": [],
+  "metrics": {}
+}
