@@ -28,7 +28,7 @@ __pycache__/
 *.pyc
 venv/
 .venv/
-
+Presentation_kursovaya.pptx
 # Logs
 *.log
 logs/
